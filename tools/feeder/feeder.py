@@ -16,7 +16,7 @@ TYPE_TEL_RAW  = 0x04
 CHANNELS = 16
 SEND_HZ = 60
 
-DEFAULT_PORT = "COM3" if sys.platform.startswith("win") else "/dev/ttyACM0"
+DEFAULT_PORT = "COM11" if sys.platform.startswith("win") else "/dev/ttyACM0"
 DEFAULT_BAUD = 115200
 
 def crc8_d5(data: bytes) -> int:
@@ -216,6 +216,7 @@ def map_axis_to_0_2047(val, inv, mn, ct, mx):
 
 class ChannelRow(QtWidgets.QWidget):
     changed = QtCore.pyqtSignal()
+    mapRequested = QtCore.pyqtSignal(object)
 
     def __init__(self, idx, cfg):
         super().__init__()
@@ -234,10 +235,13 @@ class ChannelRow(QtWidgets.QWidget):
 
         self.idxBox = QtWidgets.QSpinBox(); self.idxBox.setRange(0,63); self.idxBox.setValue(cfg.get("idx",0))
         self.inv = QtWidgets.QCheckBox("inv"); self.inv.setChecked(cfg.get("inv",False))
+        self.toggleBox = QtWidgets.QCheckBox("Toggle"); self.toggleBox.setChecked(cfg.get("toggle", False))
 
         self.minBox = QtWidgets.QSpinBox(); self.minBox.setRange(0,2047); self.minBox.setValue(cfg.get("min",200))
         self.midBox = QtWidgets.QSpinBox(); self.midBox.setRange(0,2047); self.midBox.setValue(cfg.get("center",1024))
         self.maxBox = QtWidgets.QSpinBox(); self.maxBox.setRange(0,2047); self.maxBox.setValue(cfg.get("max",1847))
+
+        self.mapBtn = QtWidgets.QPushButton("Map…")
 
         layout.addWidget(self.lbl, 0,0)
         layout.addWidget(self.bar, 0,1,1,6)
@@ -254,12 +258,19 @@ class ChannelRow(QtWidgets.QWidget):
         layout.addWidget(self.midBox, 1,8)
         layout.addWidget(QtWidgets.QLabel("max"), 1,9)
         layout.addWidget(self.maxBox, 1,10)
+        layout.addWidget(self.mapBtn, 1,11)
+        layout.addWidget(self.toggleBox, 1,12)
 
-        for w in [self.src,self.idxBox,self.inv,self.minBox,self.midBox,self.maxBox]:
+        for w in [self.src,self.idxBox,self.inv,self.minBox,self.midBox,self.maxBox,self.toggleBox]:
             if isinstance(w, QtWidgets.QAbstractButton):
                 w.toggled.connect(self.changed.emit)
             else:
                 w.currentIndexChanged.connect(self.changed.emit) if isinstance(w, QtWidgets.QComboBox) else w.valueChanged.connect(self.changed.emit)
+
+        self.mapBtn.clicked.connect(self._on_map)
+
+    def _on_map(self):
+        self.mapRequested.emit(self)
 
     def compute(self, axes, btns):
         src = self.src.currentText()
@@ -268,12 +279,29 @@ class ChannelRow(QtWidgets.QWidget):
         mn  = self.minBox.value()
         ct  = self.midBox.value()
         mx  = self.maxBox.value()
+        # Edge-detect/toggle state for button source
+        if not hasattr(self, "_btn_last"):
+            self._btn_last = 0
+        if not hasattr(self, "_btn_toggle_state"):
+            self._btn_toggle_state = 0
+        if not hasattr(self, "_prev_btn_idx"):
+            self._prev_btn_idx = idx
         if src == "axis":
             v = axes[idx] if idx < len(axes) else 0.0
             out = map_axis_to_0_2047(v, inv, mn, ct, mx)
         elif src == "button":
+            if idx != self._prev_btn_idx:
+                self._btn_last = btns[idx] if idx < len(btns) else 0
+                self._prev_btn_idx = idx
             v = btns[idx] if idx < len(btns) else 0
-            out = mx if (v ^ inv) else mn
+            if self.toggleBox.isChecked():
+                if self._btn_last == 0 and v == 1:
+                    self._btn_toggle_state = 0 if self._btn_toggle_state else 1
+                eff = self._btn_toggle_state
+            else:
+                eff = v
+            out = mx if (eff ^ inv) else mn
+            self._btn_last = v
         else:
             out = ct
         self.bar.setValue(out)
@@ -285,10 +313,16 @@ class ChannelRow(QtWidgets.QWidget):
             "src": self.src.currentText(),
             "idx": self.idxBox.value(),
             "inv": self.inv.isChecked(),
+            "toggle": self.toggleBox.isChecked(),
             "min": self.minBox.value(),
             "center": self.midBox.value(),
             "max": self.maxBox.value(),
         }
+
+    def set_mapping(self, src: str, idx: int):
+        if src in SRC_CHOICES:
+            self.src.setCurrentText(src)
+        self.idxBox.setValue(idx)
 
 # -------------------------------------------------------------------
 
@@ -301,6 +335,11 @@ class Main(QtWidgets.QWidget):
         self._load_cfg()
 
         layout = QtWidgets.QVBoxLayout(self)
+
+        # Mapping state (for joystick-to-channel learn)
+        self.mapping_row = None
+        self.mapping_baseline = ([], [])
+        self.mapping_started_at = 0.0
 
         # Serial thread
         self.serThread = SerialThread(self.cfg["serial_port"], self.cfg["serial_baud"])
@@ -320,6 +359,7 @@ class Main(QtWidgets.QWidget):
         for i in range(CHANNELS):
             row = ChannelRow(i, self.cfg["channels"][i] if i < len(self.cfg["channels"]) else DEFAULT_CFG["channels"][0])
             row.changed.connect(self.save_cfg)
+            row.mapRequested.connect(self.begin_mapping)
             self.rows.append(row)
             grid.addWidget(row, i, 0)
 
@@ -349,14 +389,11 @@ class Main(QtWidgets.QWidget):
         tel.addWidget(self.rawCount)
         layout.addLayout(tel)
 
-        # Log + Save (fixed height)
+        # Log (fixed height)
         self.log = QtWidgets.QPlainTextEdit(); self.log.setReadOnly(True)
         self.log.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.log.setFixedHeight(140)
         layout.addWidget(self.log)
-        self.btnSave = QtWidgets.QPushButton("Save Config")
-        self.btnSave.clicked.connect(self.save_cfg)
-        layout.addWidget(self.btnSave)
 
         # Timer loop
         # Only the channels area should expand/contract on resize
@@ -380,6 +417,48 @@ class Main(QtWidgets.QWidget):
 
     def tick(self):
         axes, btns = self.joy.read()
+
+        # Mapping mode: detect next button press or large axis move
+        if self.mapping_row is not None:
+            base_axes, base_btns = self.mapping_baseline
+            detected = None
+            # Button press has priority
+            if btns and base_btns:
+                for i in range(min(len(btns), len(base_btns))):
+                    if base_btns[i] == 0 and btns[i] == 1:
+                        detected = ("button", i)
+                        break
+            # Axis movement if no button detected
+            if detected is None and axes and base_axes:
+                best_i, best_d = -1, 0.0
+                for i in range(min(len(axes), len(base_axes))):
+                    d = abs(axes[i] - base_axes[i])
+                    if d > best_d:
+                        best_d, best_i = d, i
+                if best_i >= 0 and best_d > 0.35:
+                    detected = ("axis", best_i)
+
+            if detected is not None:
+                src, idx = detected
+                self.mapping_row.set_mapping(src, idx)
+                try:
+                    self.mapping_row.mapBtn.setText("Map…")
+                    self.mapping_row.mapBtn.setEnabled(True)
+                except Exception:
+                    pass
+                self.onDebug(f"Mapped CH{self.mapping_row.idx+1} to {src}[{idx}]")
+                self.mapping_row = None
+                self.save_cfg()
+            elif time.time() - self.mapping_started_at > 8.0:
+                # Timeout
+                try:
+                    self.mapping_row.mapBtn.setText("Map…")
+                    self.mapping_row.mapBtn.setEnabled(True)
+                except Exception:
+                    pass
+                self.onDebug("Mapping timed out; try again.")
+                self.mapping_row = None
+
         ch = [r.compute(axes, btns) for r in self.rows]
         self.serThread.send_channels(ch)
 
@@ -413,6 +492,25 @@ class Main(QtWidgets.QWidget):
         except:
             pass
         e.accept()
+
+    # --- Mapping helpers ---
+    def begin_mapping(self, row: ChannelRow):
+        # If another mapping is active, cancel it visually
+        if self.mapping_row is not None and hasattr(self.mapping_row, "mapBtn"):
+            try:
+                self.mapping_row.mapBtn.setText("Map…")
+                self.mapping_row.mapBtn.setEnabled(True)
+            except Exception:
+                pass
+        self.mapping_row = row
+        self.mapping_baseline = self.joy.read()
+        self.mapping_started_at = time.time()
+        try:
+            row.mapBtn.setText("Listening…")
+            row.mapBtn.setEnabled(False)
+        except Exception:
+            pass
+        self.onDebug(f"Move an axis or press a button to map CH{row.idx+1} …")
 
 # -------------------------------------------------------------------
 
