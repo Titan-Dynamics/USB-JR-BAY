@@ -139,7 +139,7 @@ static uint8_t hcrc = 0;
 static uint8_t hbuf[128];
 static uint16_t hpos = 0;
 
-uint32_t lastHostMs = 0, lastSweepMs = 0;
+uint32_t lastHostMs = 0;
 
 void handleHostFrame(uint8_t type, const uint8_t* p, uint16_t n) {
   if (type == HTYPE_CHANNELS && n == 32) {
@@ -212,14 +212,6 @@ void pumpCRSF() {
   }
 }
 
-// ----- Debug sweep channels when no host data -----
-uint16_t sweepVal(int ch, uint32_t t) {
-  uint32_t period = 3000 + ch*180;
-  uint32_t phase = (t % period);
-  if (phase < period/2) return map(phase, 0, period/2, 200, 1800);
-  return map(phase-period/2, 0, period/2, 1800, 200);
-}
-
 void setup() {
   Serial.begin(HOST_BAUD);
   while(!Serial) { delay(10); }
@@ -230,11 +222,5 @@ void setup() {
 void loop() {
   pumpHostParser();
   pumpCRSF();
-
-  uint32_t now = millis();
-  if (now - lastHostMs > 1000 && now - lastSweepMs > 50) {
-    uint16_t ch[16]; for (int i=0;i<16;i++) ch[i]=sweepVal(i, now);
-    sendCRSFchannels(ch);
-    lastSweepMs = now;
-  }
+  // If no host data is received, do not synthesize/sweep channels.
 }
