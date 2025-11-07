@@ -6,6 +6,7 @@ import sys, json, time, struct, threading
 from PyQt5 import QtWidgets, QtCore
 import pygame
 import serial
+from serial.tools import list_ports
 
 HEADER0, HEADER1 = 0x55, 0xAA
 TYPE_CHANNELS = 0x01
@@ -16,7 +17,7 @@ TYPE_TEL_RAW  = 0x04
 CHANNELS = 16
 SEND_HZ = 60
 
-DEFAULT_PORT = "COM11" if sys.platform.startswith("win") else "/dev/ttyACM0"
+DEFAULT_PORT = "COM1" if sys.platform.startswith("win") else "/dev/ttyACM0"
 DEFAULT_BAUD = 115200
 
 def crc8_d5(data: bytes) -> int:
@@ -57,7 +58,9 @@ class SerialThread(QtCore.QObject):
 
     def __init__(self, port, baud):
         super().__init__()
-        self.ser = serial.Serial(port, baud, timeout=0.05)
+        self.port = port
+        self.baud = baud
+        self.ser = None
         self.running = True
         self.raw_tel_count = 0
 
@@ -80,6 +83,20 @@ class SerialThread(QtCore.QObject):
             self.debug.emit(f"Serial write error: {e}")
 
     def run(self):
+        self.debug.emit(f"Serial thread starting; target port={self.port}, baud={self.baud}")
+        # Attempt to open serial with retries
+        while self.running and self.ser is None:
+            try:
+                self.ser = serial.Serial(self.port, self.baud, timeout=0.05)
+                self.debug.emit(f"Opened serial port {self.port} at {self.baud} baud")
+            except Exception as e:
+                try:
+                    ports = ", ".join(p.device for p in list_ports.comports())
+                except Exception:
+                    ports = ""
+                self.debug.emit(f"Serial open failed on {self.port}: {e}\nAvailable ports: {ports if ports else 'none'}")
+                time.sleep(1.0)
+                continue
         buf = bytearray()
         while self.running:
             try:
@@ -152,7 +169,7 @@ class Joy(QtCore.QObject):
         self.timer.timeout.connect(self._scan)
         self.timer.start(2000)
 
-        self.status.emit("Scanning for joystick...")
+        self.status.emit("Joystick subsystem initialized; scanning for joystick...")
 
     def _scan(self):
         # Only scan if no joystick is currently active
@@ -176,13 +193,15 @@ class Joy(QtCore.QObject):
         pygame.joystick.init()
         count = pygame.joystick.get_count()
         if count == 0:
-            self.status.emit("Scanning for joystick...")
+            self.status.emit("No joystick detected; still scanning...")
         else:
             try:
                 self.j = pygame.joystick.Joystick(0)
                 self.j.init()
                 self.name = self.j.get_name()
-                self.status.emit(f"Joystick connected: {self.name}")
+                axes_n = self.j.get_numaxes()
+                btns_n = self.j.get_numbuttons()
+                self.status.emit(f"Joystick connected: {self.name} (axes={axes_n}, buttons={btns_n})")
             except Exception as e:
                 self.status.emit(f"Joystick init error: {e}")
                 self.j = None
@@ -341,13 +360,7 @@ class Main(QtWidgets.QWidget):
         self.mapping_baseline = ([], [])
         self.mapping_started_at = 0.0
 
-        # Serial thread
-        self.serThread = SerialThread(self.cfg["serial_port"], self.cfg["serial_baud"])
-        self.thread = threading.Thread(target=self.serThread.run, daemon=True)
-        self.thread.start()
-        self.serThread.telemetry.connect(self.onTel)
-        self.serThread.debug.connect(self.onDebug)
-        self.serThread.raw_tel.connect(self.onRawTel)
+        # Serial thread (initialized after UI/log widgets)
 
         # Joystick (auto-scanning)
         self.joy = Joy()
@@ -392,8 +405,24 @@ class Main(QtWidgets.QWidget):
         # Log (fixed height)
         self.log = QtWidgets.QPlainTextEdit(); self.log.setReadOnly(True)
         self.log.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self.log.setFixedHeight(140)
+        self.log.setFixedHeight(160)
         layout.addWidget(self.log)
+
+        # After log exists, enumerate COM ports and start serial thread
+        try:
+            ports = list_ports.comports()
+            port_list = ", ".join([p.device for p in ports]) or "none"
+            self.onDebug(f"Available COM ports: {port_list}")
+        except Exception as e:
+            self.onDebug(f"Failed to enumerate COM ports: {e}")
+        self.onDebug(f"Selected COM port: {self.cfg['serial_port']} @ {self.cfg['serial_baud']} baud")
+
+        self.serThread = SerialThread(self.cfg["serial_port"], self.cfg["serial_baud"])
+        self.serThread.telemetry.connect(self.onTel)
+        self.serThread.debug.connect(self.onDebug)
+        self.serThread.raw_tel.connect(self.onRawTel)
+        self.thread = threading.Thread(target=self.serThread.run, daemon=True)
+        self.thread.start()
 
         # Timer loop
         # Only the channels area should expand/contract on resize
