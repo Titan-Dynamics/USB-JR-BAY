@@ -16,7 +16,7 @@ TYPE_TEL_RAW  = 0x04
 CHANNELS = 16
 SEND_HZ = 60
 
-DEFAULT_PORT = "COM11" if sys.platform.startswith("win") else "/dev/ttyACM0"
+DEFAULT_PORT = "COM15" if sys.platform.startswith("win") else "/dev/ttyACM0"
 DEFAULT_BAUD = 115200
 
 def crc8_d5(data: bytes) -> int:
