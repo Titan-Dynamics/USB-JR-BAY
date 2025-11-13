@@ -598,6 +598,18 @@ class Main(QtWidgets.QWidget):
         port_widget = QtWidgets.QWidget()
         port_layout = QtWidgets.QHBoxLayout(port_widget)
         port_layout.setContentsMargins(0, 5, 0, 5)
+        # Joystick status at far left
+        self.joyStatusLabel = QtWidgets.QLabel("Scanning for joystick...")
+        port_layout.addWidget(self.joyStatusLabel)
+
+        # Divider between joystick status and COM controls
+        joy_divider = QtWidgets.QFrame()
+        joy_divider.setFrameShape(QtWidgets.QFrame.VLine)
+        joy_divider.setFrameShadow(QtWidgets.QFrame.Sunken)
+        joy_divider.setLineWidth(2)
+        port_layout.addWidget(joy_divider)
+
+        # Serial COM controls
         port_layout.addWidget(QtWidgets.QLabel("COM Port:"))
 
         self.portCombo = QtWidgets.QComboBox()
@@ -636,6 +648,7 @@ class Main(QtWidgets.QWidget):
         # Joystick (auto-scanning)
         self.joy = Joy()
         self.joy.status.connect(self.onDebug)
+        self.joy.status.connect(self.onJoyStatus)
 
         # Channels (scrollable, 2-column layout: 8 on left, 8 on right)
         self.rows = []
@@ -724,6 +737,13 @@ class Main(QtWidgets.QWidget):
 
     def onDebug(self, s):
         self.log.appendPlainText(s)
+
+    def onJoyStatus(self, s):
+        # Show scanning/connected/disconnected messages or name
+        try:
+            self.joyStatusLabel.setText(str(s))
+        except Exception:
+            pass
 
     def tick(self):
         axes, btns = self.joy.read()
