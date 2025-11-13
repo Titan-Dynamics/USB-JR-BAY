@@ -1,6 +1,6 @@
-# ELRS JR Bridge (ESP32-S3 / Arduino Nano ESP32)
+# USB JR Bay for ELRS
 
-ESP32-S3 firmware to receive 16-channel RC data from a host (over USB CDC) and forward it to an ExpressLRS TX module via the JR bay using CRSF. Intended to simulate an EdgeTX radio feeding a JR bay module.
+Intended to simulate a JR Bay by forwarding joystick commands from a desktop app to an ESP32 which feeds CRSF to a TX Module. 3D-Printable JR bay STL files are included.
 
 - Input: 16 channels from host over USB CDC
 - Output: CRSF RC channels to JR bay at 1.87M baud
@@ -68,3 +68,8 @@ On valid frame, the firmware updates all 16 channels and starts streaming CRSF t
 - Power the module per its specs (e.g., 2S). ESP32 is powered by USB.
 - Designed to honor failsafe scenarios such as disconnected joystick or ESP32 USB cable - which leads to RX receiving no CRSF and triggering failsafe on most flight control software such as Ardupilot or Betaflight. Reconnection of joystick and ESP32 usb cable is automatic requiring no manual intevention or "connect button" type clicks from the user.
 - Use at your own risk and test all failsafe scenarios prior to flight.
+
+## 3D-Printed JR Bay
+- Built to be used with the Seeed Studio Xiao ESP32-S3 and DROK LM2596 Buck Converter to provide 8.4V. A mountable XT60 can also be purchased, or a regular XT60 can be glued to the port opening.
+<img width="1600" height="1256" alt="image" src="https://github.com/user-attachments/assets/69a5f511-d908-49d9-918d-66ca5ab8744b" />
+<img width="1600" height="1200" alt="image" src="https://github.com/user-attachments/assets/bf28fecf-215a-4c77-9279-5b32b4d4da69" />
