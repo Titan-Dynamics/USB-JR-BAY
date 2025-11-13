@@ -73,6 +73,7 @@ class SerialThread(QtCore.QObject):
         self.running = True
         self.raw_tel_count = 0
         self._last_status = False
+        self._initial_connect_attempted = False
         # Don't connect here; let the Main class connect the signal first
 
     def _connect(self):
@@ -133,7 +134,9 @@ class SerialThread(QtCore.QObject):
         while self.running:
             if not self.ser:
                 self._update_status()
-                self._connect()  # Try to reconnect
+                # Only auto-reconnect if initial connection was already attempted
+                if self._initial_connect_attempted:
+                    self._connect()
                 time.sleep(0.5)
                 continue
             try:
@@ -642,7 +645,10 @@ class Main(QtWidgets.QWidget):
         self.timer.start(int(1000 / SEND_HZ))
 
         # Schedule initial connection attempt after GUI is shown
-        QtCore.QTimer.singleShot(500, lambda: self.serThread._connect())
+        def attempt_initial_connection():
+            self.serThread._connect()
+            self.serThread._initial_connect_attempted = True
+        QtCore.QTimer.singleShot(500, attempt_initial_connection)
 
     def onTel(self, d):
         for k, v in d.items():
