@@ -747,6 +747,7 @@ class Main(QtWidgets.QWidget):
 
     def tick(self):
         axes, btns = self.joy.read()
+        joystick_connected = self.joy.j is not None
 
         # Mapping mode: detect next button press or large axis move
         if self.mapping_row is not None:
@@ -790,7 +791,9 @@ class Main(QtWidgets.QWidget):
                 self.mapping_row = None
 
         ch = [r.compute(axes, btns) for r in self.rows]
-        self.serThread.send_channels(ch)
+        # Do not transmit when joystick is disconnected
+        if joystick_connected:
+            self.serThread.send_channels(ch)
 
     def save_cfg(self):
         self.cfg["channels"] = [r.to_cfg() for r in self.rows]
