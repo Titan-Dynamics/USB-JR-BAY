@@ -48,6 +48,9 @@ Simple Python feeder that reads a joystick and streams 16 channels to the board.
 
 <img width="1402" height="932" alt="image" src="https://github.com/user-attachments/assets/b8a4ee37-5fc0-4a0b-8187-bf593146136b" />
 
+Making it an exe is done with the command:
+`pyinstaller --onefile --windowed --icon="C:\Users\X\Documents\GitHub\USB-JR-ELRS\tools\feeder\icon.ico" --name="USB JR Bay" feeder.py`
+
 ## Host Protocols
 
 Two simple input formats are supported over USB CDC (`Serial`):

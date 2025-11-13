@@ -6,3 +6,5 @@
 cmake-build*/
 .DS_Store
 
+/tools/feeder/.idea
+tools/feeder/.idea/workspace.xml

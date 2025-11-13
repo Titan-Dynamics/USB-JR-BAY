@@ -7,6 +7,7 @@ from PyQt5 import QtWidgets, QtCore
 import pygame
 import serial
 import serial.tools.list_ports
+from PyQt5.QtGui import QIcon
 
 HEADER0, HEADER1 = 0x55, 0xAA
 TYPE_CHANNELS = 0x01
@@ -468,8 +469,7 @@ class ChannelRow(QtWidgets.QWidget):
 
         # Set default output value based on mapped state
         if not is_mapped:
-            # Unmapped: use 1500 for first 4 channels, 1000 for others
-            default_val = 1500 if self.idx < 4 else 1000
+            default_val = 1000
             self.bar.setValue(default_val)
             self.val.setText(str(default_val))
 
@@ -544,7 +544,7 @@ class ChannelRow(QtWidgets.QWidget):
             self._btn_last = v
         else:
             # src == "const": unmapped channel
-            out = ct if self.idx < 4 else mn
+            out = mn
         self.bar.setValue(out)
         self.val.setText(str(out))
         return out
@@ -574,6 +574,7 @@ class Main(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("ELRS Calibrator + Link Stats")
+        self.setWindowIcon(QIcon('icon.ico'))
         self.resize(1400, 900)
         self.cfg = DEFAULT_CFG.copy()
         self._load_cfg()
