@@ -8,3 +8,4 @@ cmake-build*/
 
 /tools/feeder/.idea
 tools/feeder/.idea/workspace.xml
+/tools/feeder/build
