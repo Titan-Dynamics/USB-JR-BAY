@@ -1,6 +1,9 @@
 #include "crsf_handler.h"
 #include "debug.h"
 
+// From usb_host_parser.cpp: timestamp of last USB serial activity
+extern volatile uint32_t usb_host_last_activity_ms;
+
 // ============================================================================
 // CrsfSerial Implementation
 // ============================================================================
@@ -441,6 +444,11 @@ bool CrsfPacketHandler::isTimeToSendRc()
 {
     uint32_t now = micros();
     uint32_t elapsed = now - lastRcPacketSent;
+    // Inhibit CRSF TX if no USB serial activity for >1s
+    if (millis() - usb_host_last_activity_ms > 1000)
+    {
+        return false;
+    }
     return elapsed >= rcPacketInterval;
 }
 

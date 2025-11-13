@@ -9,8 +9,13 @@
  * Interface: USB CDC Serial (Serial object)
  */
 
+#include <Arduino.h>
 #include "usb_host_parser.h"
 #include "debug.h"
+
+// Timestamp (ms) of the last received USB serial byte
+// Used by CRSF handler to inhibit TX after inactivity
+volatile uint32_t usb_host_last_activity_ms = 0;
 
 // ============================================================================
 // Constructor
@@ -33,6 +38,8 @@ void UsbHostParser::update(CrsfPacketHandler &crsf)
     while (Serial.available())
     {
         uint8_t b = Serial.read();
+        // Mark USB activity for inactivity timeout logic
+        usb_host_last_activity_ms = millis();
         processByte(b, crsf);
     }
 }
