@@ -1,17 +1,13 @@
 #include <Arduino.h>
 #include "crsf_handler.h"
-#include "usb_host_parser.h"
 #include "debug.h"
 
 // ============================================================================
 // Global Objects
 // ============================================================================
 
-// CRSF protocol handler
-CrsfPacketHandler crsf;
-
-// USB host protocol parser (USB CDC serial from PC)
-UsbHostParser usbParser;
+// CRSF half-duplex serial driver
+CrsfSerial crsfSerial;
 
 // ============================================================================
 // Setup
@@ -20,10 +16,10 @@ UsbHostParser usbParser;
 void setup()
 {
     // Initialize USB CDC for debugging and RC data input
-    Serial.begin(115200);
+    Serial.begin(5250000);
 
-    // Initialize CRSF handler
-    crsf.begin();
+    // Initialize CRSF half-duplex UART
+    crsfSerial.begin();
 
     // Debug output control:
     // This affects all DBGPRINT/DBGPRINTLN/DBGPRINTF output throughout the code
@@ -37,15 +33,38 @@ void setup()
 
 void loop()
 {
-    // Process incoming USB host protocol data
-    // This parses RC channel frames from the USB CDC port,
-    // and then updates the CRSF handler with the new values
-    usbParser.update(crsf);
+    // Transparent forwarder:
+    // Read bytes from USB CDC and send to CRSF UART (half-duplex)
+    static uint8_t buf[256];
+    uint16_t len = 0;
 
-    // Update CRSF handler (non-blocking)
-    // This handles:
-    // - Reading incoming UART data from ELRS module
-    // - Processing received packets (link stats, mixer sync)
-    // - Sending RC packets at precise intervals
-    crsf.update();
+    while (Serial.available() && len < sizeof(buf))
+    {
+        buf[len++] = Serial.read();
+    }
+
+    if (len > 0)
+    {
+        // Switch to TX, send burst, then return to RX
+        crsfSerial.setTxMode();
+        crsfSerial.write(buf, len);
+        crsfSerial.flush();
+        crsfSerial.setRxMode();
+
+        // Discard only the loopback echo (same number of bytes we just sent)
+        // Don't flush the entire RX buffer, as fast responses from the TX
+        // may already be arriving (e.g., DEVICE_INFO replies to DEVICE_PING)
+        uint16_t bytesToDiscard = len;
+        while (bytesToDiscard > 0 && crsfSerial.available())
+        {
+            crsfSerial.read();
+            bytesToDiscard--;
+        }
+    }
+
+    // Forward any bytes arriving from the ELRS UART back to USB CDC
+    while (crsfSerial.available())
+    {
+        Serial.write(crsfSerial.read());
+    }
 }
