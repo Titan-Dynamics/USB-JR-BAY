@@ -106,6 +106,14 @@ class ChannelRow(QtWidgets.QWidget):
         self.toggleBox.setChecked(cfg.get("toggle", False))
         self.toggleBox.setMaximumWidth(80)
 
+        self.toggleGroupBox = QtWidgets.QSpinBox()
+        self.toggleGroupBox.setRange(0, 15)
+        # If toggle_group is not in config, assign a unique group per channel
+        default_group = cfg.get("toggle_group", idx % 16)
+        self.toggleGroupBox.setValue(default_group)
+        self.toggleGroupBox.setMaximumWidth(60)
+        self.toggleGroupBox.setEnabled(cfg.get("toggle", False))
+
         self.rotaryBox = QtWidgets.QCheckBox("Rotary")
         self.rotaryBox.setChecked(cfg.get("rotary", False))
         self.rotaryBox.setMaximumWidth(80)
@@ -177,14 +185,16 @@ class ChannelRow(QtWidgets.QWidget):
         layout.addWidget(self.maxBox, 1, 10)
         layout.addWidget(self.mapBtn, 1, 11)
         layout.addWidget(self.toggleBox, 1, 12)
-        layout.addWidget(self.rotaryBox, 1, 13)
-        layout.addWidget(self.rotaryStopsBox, 1, 14)
+        layout.addWidget(self.toggleGroupBox, 1, 13)
+        layout.addWidget(self.rotaryBox, 1, 14)
+        layout.addWidget(self.rotaryStopsBox, 1, 15)
 
         # Connect signals
         self.nameBox.textChanged.connect(self.changed.emit)
         self.src.currentIndexChanged.connect(self._update_visual_state)
         self.rotaryBox.toggled.connect(self._update_visual_state)
         self.toggleBox.toggled.connect(self._on_toggle_changed)
+        self.toggleGroupBox.valueChanged.connect(self.changed.emit)
         self.rotaryBox.toggled.connect(self._on_rotary_changed)
 
         for w in [self.src, self.idxBox, self.inv, self.minBox, self.midBox, self.maxBox]:
@@ -209,6 +219,7 @@ class ChannelRow(QtWidgets.QWidget):
         self._btn_toggle_state = 0
         self._btn_rotary_state = 0
         self._prev_btn_idx = self.idxBox.value()
+        self._toggle_activated_time = 0  # Track when toggle was last activated
 
     def _on_map(self):
         """Handle map button click."""
@@ -278,6 +289,8 @@ class ChannelRow(QtWidgets.QWidget):
             self.rotaryBox.setChecked(False)
             self.rotaryBox.blockSignals(False)
             self._update_visual_state()
+        # Enable/disable toggle group box based on toggle state
+        self.toggleGroupBox.setEnabled(self.toggleBox.isChecked())
         self.changed.emit()
 
     def _on_rotary_changed(self):
@@ -333,6 +346,9 @@ class ChannelRow(QtWidgets.QWidget):
                 # Toggle mode: on/off state
                 if self._btn_last == 0 and v == 1:
                     self._btn_toggle_state = 0 if self._btn_toggle_state else 1
+                    # Track when this toggle was activated
+                    import time
+                    self._toggle_activated_time = time.time() if self._btn_toggle_state else 0
                 eff = self._btn_toggle_state
                 out = mx if (eff ^ inv) else mn
             else:
@@ -366,6 +382,7 @@ class ChannelRow(QtWidgets.QWidget):
             "idx": self.idxBox.value(),
             "inv": self.inv.isChecked(),
             "toggle": self.toggleBox.isChecked(),
+            "toggle_group": self.toggleGroupBox.value(),
             "rotary": self.rotaryBox.isChecked(),
             "rotary_stops": self.rotaryStopsBox.value(),
             "min": self.minBox.value(),

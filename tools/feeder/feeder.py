@@ -43,7 +43,7 @@ class Main(QtWidgets.QWidget):
         super().__init__()
         self.setWindowTitle("ELRS Calibrator + Link Stats")
         self.setWindowIcon(QIcon('icon.ico'))
-        self.resize(1430, 930)
+        self.resize(1500, 950)
         self.cfg = DEFAULT_CFG.copy()
         self._load_cfg()
 
@@ -384,6 +384,10 @@ class Main(QtWidgets.QWidget):
                 self.mapping_row = None
 
         ch = [r.compute(axes, btns) for r in self.rows]
+
+        # Enforce toggle groups: only one toggle per group can be on
+        ch = self._enforce_toggle_groups(ch)
+
         # Update the shared channel buffer (decoupled); avoid transmitting when joystick disconnected
         if joystick_connected:
             try:
@@ -422,6 +426,37 @@ class Main(QtWidgets.QWidget):
         self.cfg["channels"] = [r.to_cfg() for r in self.rows]
         self._save_cfg_disk()
         self.onDebug("Config saved")
+
+    def _enforce_toggle_groups(self, ch):
+        ch = list(ch)  # Make a copy to avoid modifying the original
+
+        # Build a map of group ID to list of (channel_idx, row) tuples
+        groups = {}
+        for i, row in enumerate(self.rows):
+            if row.toggleBox.isChecked():
+                group_id = row.toggleGroupBox.value()
+                if group_id not in groups:
+                    groups[group_id] = []
+                groups[group_id].append((i, row))
+
+        # For each group, ensure only one toggle is on at a time
+        for group_id, members in groups.items():
+            # Find all toggles that are currently on and which was most recently activated
+            on_toggles = []
+            for idx, row in members:
+                if row._btn_toggle_state == 1:
+                    on_toggles.append((row._toggle_activated_time, idx, row))
+
+            # If multiple toggles are on, keep only the most recently activated one
+            if len(on_toggles) > 1:
+                # Sort by activation time (most recent last)
+                on_toggles.sort(key=lambda x: x[0])
+                # Turn off all but the most recently activated one
+                for _, idx, row in on_toggles[:-1]:
+                    row._btn_toggle_state = 0
+                    ch[idx] = row.minBox.value()
+
+        return ch
 
     def _save_cfg_disk(self):
         try:
