@@ -9,9 +9,12 @@ import re
 import threading
 import csv
 import os
+import tempfile
+import shutil
 from datetime import datetime
 from PyQt5 import QtWidgets, QtCore
-from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QIcon, QPalette, QColor, QPixmap, QPainter, QPolygon
+from PyQt5.QtCore import QPoint
 
 # Import from refactored modules
 from crsf_protocol import *
@@ -41,6 +44,10 @@ TELEMETRY_UNIT_MAP = {
 
 SEND_HZ = 60
 
+def tpwr_to_mw_string(crsfpower):
+    return {1: "10mW", 2: "25mW", 3: "100mW", 4: "500mW", 5: "1000mW",
+            6: "2000mW", 7: "250mW", 8: "50mW"}.get(crsfpower, "Unknown")
+
 
 class Main(QtWidgets.QWidget):
     def __init__(self):
@@ -51,6 +58,9 @@ class Main(QtWidgets.QWidget):
         if icon_path and os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
         self.resize(1500, 950)
+
+        # Set dark title bar on Windows 10/11
+        self._set_dark_title_bar()
         self.cfg = DEFAULT_CFG.copy()
         self._load_cfg()
 
@@ -86,6 +96,7 @@ class Main(QtWidgets.QWidget):
         port_layout.setContentsMargins(0, 5, 0, 5)
         # Joystick status at far left
         self.joyStatusLabel = QtWidgets.QLabel("Scanning for joystick...")
+        self.joyStatusLabel.setStyleSheet("color: red; font-weight: bold;")
         port_layout.addWidget(self.joyStatusLabel)
 
         # Divider between joystick status and COM controls
@@ -99,6 +110,7 @@ class Main(QtWidgets.QWidget):
         port_layout.addWidget(QtWidgets.QLabel("COM Port:"))
 
         self.portCombo = QtWidgets.QComboBox()
+        self.portCombo.setMinimumWidth(80)
         self._refresh_port_list()
         self.portCombo.setCurrentText(self.cfg["serial_port"])
         self.portCombo.currentTextChanged.connect(self._on_port_changed)
@@ -109,25 +121,24 @@ class Main(QtWidgets.QWidget):
         refresh_btn.setMaximumWidth(80)
         port_layout.addWidget(refresh_btn)
 
-        # Packet Rate is now displayed in the Configuration tab
+        # JR Bay status right after the port controls
+        self.jrBayStatusLabel = QtWidgets.QLabel("Disconnected")
+        self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
+        port_layout.addWidget(self.jrBayStatusLabel)
+
+        # Divider after JR Bay status
+        jr_divider = QtWidgets.QFrame()
+        jr_divider.setFrameShape(QtWidgets.QFrame.VLine)
+        jr_divider.setFrameShadow(QtWidgets.QFrame.Sunken)
+        jr_divider.setLineWidth(2)
+        port_layout.addWidget(jr_divider)
+
+        # Module status after divider
+        self.txStatusLabel = QtWidgets.QLabel("No module detected")
+        self.txStatusLabel.setStyleSheet("color: red; font-weight: bold;")
+        port_layout.addWidget(self.txStatusLabel)
 
         port_layout.addStretch()
-
-        # JR Bay (UART) and TX status labels — stacked vertically
-        self.jrBayStatusLabel = QtWidgets.QLabel("JR Bay: Disconnected")
-        self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
-        self.txStatusLabel = QtWidgets.QLabel("TX: Disconnected")
-        self.txStatusLabel.setStyleSheet("color: red; font-weight: bold;")
-        # Create a small widget with vertical layout to stack the two labels
-        status_widget = QtWidgets.QWidget()
-        status_layout = QtWidgets.QVBoxLayout(status_widget)
-        status_layout.setContentsMargins(0, 0, 0, 0)
-        status_layout.setSpacing(2)
-        status_layout.addWidget(self.jrBayStatusLabel)
-        status_layout.addWidget(self.txStatusLabel)
-        # Make sure the widget doesn't expand vertically unnecessarily
-        status_widget.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-        port_layout.addWidget(status_widget)
 
         port_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         layout.addWidget(port_widget)
@@ -178,22 +189,24 @@ class Main(QtWidgets.QWidget):
         for key in ["1RSS","2RSS","RSNR","TRSS","TSNR","LQ","TLQ","RFMD","TPWR"]:
             box = QtWidgets.QGroupBox(key)
             lab = QtWidgets.QLabel("--")
-            lab.setAlignment(QtCore.Qt.AlignCenter)
+            lab.setAlignment(QtCore.Qt.AlignCenter | QtCore.Qt.AlignVCenter)
             f = lab.font(); f.setPointSize(14); lab.setFont(f)
-            v = QtWidgets.QVBoxLayout(box); v.addWidget(lab)
+            v = QtWidgets.QVBoxLayout(box)
+            v.setContentsMargins(0, 0, 0, 10)
+            v.addWidget(lab, alignment=QtCore.Qt.AlignCenter)
             tel.addWidget(box)
             self.telLabels[key] = lab
 
         # Initially set link stats labels to grey
         for lab in self.telLabels.values():
-            lab.setStyleSheet("color: grey;")
+            lab.setStyleSheet("color: #888888;")
 
         # Log (fixed height)
         self.log = QtWidgets.QPlainTextEdit(); self.log.setReadOnly(True)
         self.log.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.log.setFixedHeight(140)
 
-        # Tabs for Channels and Configuration
+        # Tabs for Channels and Module Settings
         self.tabs = QtWidgets.QTabWidget()
 
         # Channels tab
@@ -202,13 +215,13 @@ class Main(QtWidgets.QWidget):
         channels_layout.addWidget(ch_scroll)
         self.tabs.addTab(channels_tab, "Channels")
 
-        # Configuration tab
-        config_tab = QtWidgets.QWidget()
-        config_layout = QtWidgets.QVBoxLayout(config_tab)
+        # Module Settings tab
+        module_settings = QtWidgets.QWidget()
+        config_layout = QtWidgets.QVBoxLayout(module_settings)
         # Leave blank for now
-        self.tabs.addTab(config_tab, "Configuration")
-        config_tab.setMinimumSize(400, 300)
-        # Loading indicator for config tab (indeterminate progress)
+        self.tabs.addTab(module_settings, "Module Settings")
+        module_settings.setMinimumSize(400, 300)
+        # Loading indicator for module_settings tab (indeterminate progress)
         self.config_loading = QtWidgets.QProgressBar()
         self.config_loading.setRange(0, 0)  # indeterminate
         self.config_loading.setMaximumHeight(12)
@@ -230,12 +243,6 @@ class Main(QtWidgets.QWidget):
 
         # Log below telemetry
         layout.addWidget(self.log)
-
-        # Version info at the bottom
-        version_label = QtWidgets.QLabel(f"Version: {VERSION} | Git SHA: {GIT_SHA}")
-        version_label.setStyleSheet("color: grey; font-size: 9pt;")
-        version_label.setAlignment(QtCore.Qt.AlignRight)
-        layout.addWidget(version_label)
 
         # Timer loop
         # Only the tabs area should expand/contract on resize
@@ -264,16 +271,20 @@ class Main(QtWidgets.QWidget):
         for k, v in d.items():
             if k in self.telLabels:
                 try:
-                    unit = TELEMETRY_UNIT_MAP.get(k)
-                    if unit and v is not None:
-                        # display numeric values with units
-                        # Keep simple formatting — if it's int or float show without extra quirks
-                        if isinstance(v, float):
-                            text = f"{v:.1f} {unit}"
-                        else:
-                            text = f"{v} {unit}"
+                    # Special handling for TPWR - convert to mW string
+                    if k == 'TPWR' and v is not None:
+                        text = tpwr_to_mw_string(v)
                     else:
-                        text = str(v)
+                        unit = TELEMETRY_UNIT_MAP.get(k)
+                        if unit and v is not None:
+                            # display numeric values with units
+                            # Keep simple formatting — if it's int or float show without extra quirks
+                            if isinstance(v, float):
+                                text = f"{v:.1f} {unit}"
+                            else:
+                                text = f"{v} {unit}"
+                        else:
+                            text = str(v)
                 except Exception:
                     text = str(v)
                 self.telLabels[k].setText(text)
@@ -282,27 +293,25 @@ class Main(QtWidgets.QWidget):
     def onConnectionStatus(self, is_connected):
         """Update status indicator based on actual connection state"""
         if is_connected:
-            # JR Bay is simply the COM port when connected
+            # Serial port connected
             try:
-                portname = getattr(self.serThread, 'port', self.cfg.get('serial_port', 'Unknown'))
-                self.jrBayStatusLabel.setText(f"JR Bay: {portname}")
-                self.jrBayStatusLabel.setStyleSheet("color: green; font-weight: bold;")
+                self.jrBayStatusLabel.setText("Connected")
+                self.jrBayStatusLabel.setStyleSheet("color: white; font-weight: bold;")
             except Exception:
                 pass
         else:
             # Serial port disconnected
             try:
-                self.jrBayStatusLabel.setText("JR Bay: Disconnected")
+                self.jrBayStatusLabel.setText("Disconnected")
                 self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
             except Exception:
                 pass
             # When the serial port disconnects the TX is implicitly unreachable
             try:
-                self.txStatusLabel.setText("TX: Disconnected")
+                self.txStatusLabel.setText("Module: Disconnected")
                 self.txStatusLabel.setStyleSheet("color: red; font-weight: bold;")
             except Exception:
                 pass
-            # rateCombo removed; packet rate is now in the config tab
 
     def onDebug(self, s):
         try:
@@ -314,6 +323,13 @@ class Main(QtWidgets.QWidget):
         # Show scanning/connected/disconnected messages or name
         try:
             self.joyStatusLabel.setText(str(s))
+            # Set color based on status
+            status_lower = str(s).lower()
+            if "scanning" in status_lower or "no joystick" in status_lower or "disconnected" in status_lower:
+                self.joyStatusLabel.setStyleSheet("color: red; font-weight: bold;")
+            else:
+                # Connected - show joystick name in white
+                self.joyStatusLabel.setStyleSheet("color: white; font-weight: bold;")
         except Exception:
             pass
 
@@ -349,10 +365,10 @@ class Main(QtWidgets.QWidget):
                     except Exception:
                         tx_name = None
                     if tx_name:
-                        self.txStatusLabel.setText(f"TX: {tx_name}")
+                        self.txStatusLabel.setText(f"Module: {tx_name}")
                     else:
-                        self.txStatusLabel.setText("TX: Connected")
-                    self.txStatusLabel.setStyleSheet("color: green; font-weight: bold;")
+                        self.txStatusLabel.setText("Module: Connected")
+                    self.txStatusLabel.setStyleSheet("color: white; font-weight: bold;")
             except Exception as e:
                 self.onDebug(f"onSync heartbeat update error: {e}")
         except Exception as e:
@@ -420,7 +436,7 @@ class Main(QtWidgets.QWidget):
             if self._tx_connected and (time.time() - self._last_tx_heartbeat) > 2.0:
                 self._tx_connected = False
                 try:
-                    self.txStatusLabel.setText("TX: Disconnected")
+                    self.txStatusLabel.setText("Module: Disconnected")
                     self.txStatusLabel.setStyleSheet("color: red; font-weight: bold;")
                 except Exception:
                     pass
@@ -438,7 +454,7 @@ class Main(QtWidgets.QWidget):
         # Link stats timeout check
         now = time.time()
         timeout = now - self.serThread.last_link_stats_time > 5.0
-        color = "grey" if timeout else "black"
+        color = "#888888" if timeout else "#e0e0e0"
         for lab in self.telLabels.values():
             lab.setStyleSheet(f"color: {color};")
 
@@ -454,7 +470,12 @@ class Main(QtWidgets.QWidget):
         groups = {}
         for i, row in enumerate(self.rows):
             if row.toggleBox.isChecked():
-                group_id = row.toggleGroupBox.value()
+                # Convert dropdown index to group ID: 0 = None (-1), 1-8 = Groups 1-8 (0-7)
+                dropdown_index = row.toggleGroupBox.currentIndex()
+                if dropdown_index == 0:
+                    # Skip toggles with group "None" - they are independent
+                    continue
+                group_id = dropdown_index - 1  # Convert to 0-7 for Groups 1-8
                 if group_id not in groups:
                     groups[group_id] = []
                 groups[group_id].append((i, row))
@@ -496,6 +517,30 @@ class Main(QtWidgets.QWidget):
 
         return os.path.join(base_path, 'icon.ico')
 
+    def _set_dark_title_bar(self):
+        """Set dark title bar on Windows 10/11"""
+        try:
+            import platform
+            if platform.system() == "Windows":
+                # For Windows 10/11, use DWM API to enable dark title bar
+                try:
+                    from ctypes import windll, c_int, byref, sizeof
+                    HWND = int(self.winId())
+                    # DWMWA_USE_IMMERSIVE_DARK_MODE = 20 (Windows 11) or 19 (Windows 10 older builds)
+                    DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+                    value = c_int(1)  # 1 = dark mode, 0 = light mode
+                    windll.dwmapi.DwmSetWindowAttribute(HWND, DWMWA_USE_IMMERSIVE_DARK_MODE, byref(value), sizeof(value))
+                except Exception:
+                    # Try the older Windows 10 attribute if the newer one fails
+                    try:
+                        DWMWA_USE_IMMERSIVE_DARK_MODE = 19
+                        value = c_int(1)
+                        windll.dwmapi.DwmSetWindowAttribute(HWND, DWMWA_USE_IMMERSIVE_DARK_MODE, byref(value), sizeof(value))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     def _load_cfg(self):
         try:
             with open("calib.json", "r") as f:
@@ -531,10 +576,6 @@ class Main(QtWidgets.QWidget):
         self.cfg["serial_port"] = port
         self.serThread.reconnect(port, DEFAULT_BAUD)
         self.save_cfg()
-
-
-    # Packet rate moved into the Configuration tab as a standard 'select' field.
-    # Writes are handled via the combo control in the config tab which calls _on_param_changed.
 
     def _on_param_changed(self, fid, value):
         """Handle parameter change from config tab"""
@@ -639,7 +680,11 @@ class Main(QtWidgets.QWidget):
 
             # Add all link stats fields
             for field in self.csv_fieldnames[1:]:  # Skip 'timestamp'
-                row[field] = stats_dict.get(field, '')
+                value = stats_dict.get(field, '')
+                # Convert TPWR to mW string for CSV
+                if field == 'TPWR' and value != '':
+                    value = tpwr_to_mw_string(value)
+                row[field] = value
 
             # Append to CSV file
             with open(self.csv_filename, 'a', newline='') as csvfile:
@@ -661,7 +706,7 @@ class Main(QtWidgets.QWidget):
                 # Update the TX name in the UI; heartbeat will change the color
                 # Only update label for TX modules, not receivers
                 try:
-                    self.txStatusLabel.setText(f"TX: {name}")
+                    self.txStatusLabel.setText(f"Module: {name}")
                 except Exception:
                     pass
             self.onDebug(f"Device discovered: {name} addr=0x{src:02X}")
@@ -681,10 +726,6 @@ class Main(QtWidgets.QWidget):
     def _on_device_parameters_loaded(self, src: int, details: dict):
         # Populate packet rate dropdown when parameters are loaded
         fields = details.get('fields', {})
-        for fid, field in fields.items():
-            # Packet Rate combo moved into the configuration tab UI; the config tab will populate it
-            # The _populate_config_tab function will create a QComboBox for this field like any other select.
-            pass
 
         # Only populate config tab after the serial thread indicates the device is fully loaded
         loaded = details.get('loaded', False)
@@ -708,7 +749,7 @@ class Main(QtWidgets.QWidget):
             pass
 
         # Populate config tab with all parameters (full reload only after device loaded)
-        self._populate_config_tab(fields, src)
+        self._populate_module_settings(fields, src)
         # Clear pending writes that are now reflected by the device
         try:
             # Walk pending writes list and remove if device now reports same value
@@ -846,13 +887,13 @@ class Main(QtWidgets.QWidget):
         except Exception as e:
             self.onDebug(f"_on_device_parameter_field_updated error: {e}")
 
-    def _populate_config_tab(self, fields, src):
-        # Clear existing widgets in config tab
-        config_tab = self.tabs.widget(1)  # Configuration tab
-        if config_tab.layout():
-            layout = config_tab.layout()
+    def _populate_module_settings(self, fields, src):
+        # Clear existing widgets in module settings tab
+        module_settings = self.tabs.widget(1)  # Module Settings tab
+        if module_settings.layout():
+            layout = module_settings.layout()
             # Clear all widgets from the existing layout
-            # some widgets in the config tab are permanent (like the loading bar)
+            # some widgets in the module settings tab are permanent (like the loading bar)
             # We'll skip deleting them here and re-insert afterwards
             keep_loading_widget = None
             while layout.count():
@@ -897,10 +938,10 @@ class Main(QtWidgets.QWidget):
                         pass
 
         # Reuse existing layout if present, otherwise create new
-        layout = config_tab.layout()
+        layout = module_settings.layout()
         if layout is None:
-            layout = QtWidgets.QVBoxLayout(config_tab)
-            config_tab.setLayout(layout)
+            layout = QtWidgets.QVBoxLayout(module_settings)
+            module_settings.setLayout(layout)
 
         # Reset widget mapping for this repopulation
         try:
@@ -910,7 +951,7 @@ class Main(QtWidgets.QWidget):
         # Create scrollable area
         # Remove any existing scroll area if present
         # (look for first QScrollArea child and delete it to avoid duplicates)
-        for child in config_tab.findChildren(QtWidgets.QScrollArea):
+        for child in module_settings.findChildren(QtWidgets.QScrollArea):
             try:
                 child.setParent(None)
                 child.deleteLater()
@@ -922,7 +963,7 @@ class Main(QtWidgets.QWidget):
         widget = QtWidgets.QWidget()
         widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         inner_layout = QtWidgets.QVBoxLayout(widget)
-        # Add a small toolbar with a Refresh button at the top of the config tab
+        # Add a small toolbar with a Refresh button at the top of the module settings tab
         toolbar = QtWidgets.QHBoxLayout()
         refresh_btn = QtWidgets.QPushButton("Refresh")
         refresh_btn.setMaximumWidth(120)
@@ -986,7 +1027,7 @@ class Main(QtWidgets.QWidget):
         for fid, field in fields.items():
             try:
                 name = field.get('name', '')
-                # include Packet Rate in the config tab like any other field
+                # include Packet Rate in the module settings tab like any other field
                 ftype = field.get('type', 0)
                 parent = field.get('parent', 0)
                 # determine which layout to add to (parent grouping)
@@ -1196,7 +1237,7 @@ class Main(QtWidgets.QWidget):
         # Only set current_device_id for TX modules, not receivers
         if src in (CRSF_ADDRESS_CRSF_TRANSMITTER, CRSF_ADDRESS_TRANSMITTER_LEGACY):
             self.current_device_id = src
-        config_tab.update()
+        module_settings.update()
         self.tabs.update()
         self.tabs.repaint()
         widget.update()
@@ -1204,8 +1245,438 @@ class Main(QtWidgets.QWidget):
 
 # -------------------------------------------------------------------
 
+def create_arrow_icon(direction='down', color='#e0e0e0', size=16):
+    """Create an arrow icon for combo boxes and spin boxes.
+
+    Args:
+        direction: 'up' or 'down'
+        color: Arrow color
+        size: Icon size in pixels
+
+    Returns:
+        QIcon with the arrow
+    """
+    pixmap = QPixmap(size, size)
+    pixmap.fill(QtCore.Qt.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    # Create arrow polygon
+    if direction == 'down':
+        points = [
+            QPoint(size // 4, size // 3),
+            QPoint(3 * size // 4, size // 3),
+            QPoint(size // 2, 2 * size // 3)
+        ]
+    else:  # up
+        points = [
+            QPoint(size // 4, 2 * size // 3),
+            QPoint(3 * size // 4, 2 * size // 3),
+            QPoint(size // 2, size // 3)
+        ]
+
+    polygon = QPolygon(points)
+    painter.setBrush(QColor(color))
+    painter.setPen(QtCore.Qt.NoPen)
+    painter.drawPolygon(polygon)
+    painter.end()
+
+    return QIcon(pixmap)
+
+
+def create_checkmark_icon(color='#ffffff', size=16):
+    """Create a checkmark icon for checkboxes.
+
+    Args:
+        color: Checkmark color
+        size: Icon size in pixels
+
+    Returns:
+        QIcon with the checkmark
+    """
+    pixmap = QPixmap(size, size)
+    pixmap.fill(QtCore.Qt.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    pen = painter.pen()
+    pen.setColor(QColor(color))
+    pen.setWidth(2)
+    painter.setPen(pen)
+
+    # Draw checkmark
+    points = [
+        QPoint(size // 4, size // 2),
+        QPoint(size // 2 - 1, 3 * size // 4),
+        QPoint(3 * size // 4, size // 4)
+    ]
+
+    painter.drawPolyline(QPolygon(points))
+    painter.end()
+
+    return QIcon(pixmap)
+
+
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
+
+    # Create temporary directory for icons
+    temp_dir = tempfile.mkdtemp()
+
+    # Create and save arrow icons
+    down_arrow = create_arrow_icon('down', '#e0e0e0', 12)
+    up_arrow = create_arrow_icon('up', '#e0e0e0', 12)
+    down_arrow_disabled = create_arrow_icon('down', '#555555', 12)
+    up_arrow_disabled = create_arrow_icon('up', '#555555', 12)
+    checkmark = create_checkmark_icon('#ffffff', 14)
+    checkmark_disabled = create_checkmark_icon('#555555', 14)
+
+    down_arrow_path = os.path.join(temp_dir, 'down_arrow.png').replace('\\', '/')
+    up_arrow_path = os.path.join(temp_dir, 'up_arrow.png').replace('\\', '/')
+    down_arrow_disabled_path = os.path.join(temp_dir, 'down_arrow_disabled.png').replace('\\', '/')
+    up_arrow_disabled_path = os.path.join(temp_dir, 'up_arrow_disabled.png').replace('\\', '/')
+    checkmark_path = os.path.join(temp_dir, 'checkmark.png').replace('\\', '/')
+    checkmark_disabled_path = os.path.join(temp_dir, 'checkmark_disabled.png').replace('\\', '/')
+
+    down_arrow.pixmap(12, 12).save(down_arrow_path)
+    up_arrow.pixmap(12, 12).save(up_arrow_path)
+    down_arrow_disabled.pixmap(12, 12).save(down_arrow_disabled_path)
+    up_arrow_disabled.pixmap(12, 12).save(up_arrow_disabled_path)
+    checkmark.pixmap(14, 14).save(checkmark_path)
+    checkmark_disabled.pixmap(14, 14).save(checkmark_disabled_path)
+
+    # Apply dark theme
+    dark_stylesheet = """
+    QWidget {{
+        background-color: #2b2b2b;
+        color: #e0e0e0;
+        font-family: Segoe UI, Arial, sans-serif;
+    }}
+
+    QMainWindow, QDialog {{
+        background-color: #2b2b2b;
+    }}
+
+    QLabel {{
+        color: #e0e0e0;
+        background-color: transparent;
+    }}
+
+    QPushButton {{
+        background-color: #3c3c3c;
+        color: #e0e0e0;
+        border: 1px solid #555555;
+        border-radius: 4px;
+        padding: 3px 10px;
+        min-height: 20px;
+    }}
+
+    QPushButton:hover {{
+        background-color: #4a4a4a;
+        border: 1px solid #666666;
+    }}
+
+    QPushButton:pressed {{
+        background-color: #2a2a2a;
+    }}
+
+    QPushButton:disabled {{
+        background-color: #2b2b2b;
+        color: #666666;
+        border: 1px solid #3c3c3c;
+    }}
+
+    QLineEdit, QSpinBox, QDoubleSpinBox {{
+        background-color: #3c3c3c;
+        color: #e0e0e0;
+        border: 1px solid #555555;
+        border-radius: 3px;
+        padding: 3px;
+        selection-background-color: #0d47a1;
+    }}
+
+    QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
+        border: 1px solid #1e88e5;
+    }}
+
+    QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {{
+        background-color: #2b2b2b;
+        color: #666666;
+    }}
+
+    QComboBox {{
+        background-color: #3c3c3c;
+        color: #e0e0e0;
+        border: 1px solid #555555;
+        border-radius: 3px;
+        padding: 3px 5px;
+        min-height: 20px;
+    }}
+
+    QComboBox:hover {{
+        border: 1px solid #666666;
+    }}
+
+    QComboBox:disabled {{
+        background-color: #2b2b2b;
+        color: #666666;
+    }}
+
+    QComboBox::drop-down {{
+        subcontrol-origin: padding;
+        subcontrol-position: top right;
+        width: 20px;
+        border-left: 1px solid #555555;
+        background-color: #3c3c3c;
+        border-top-right-radius: 3px;
+        border-bottom-right-radius: 3px;
+    }}
+
+    QComboBox::down-arrow {{
+        image: url({down_arrow_path});
+        width: 12px;
+        height: 12px;
+    }}
+
+    QComboBox::down-arrow:disabled {{
+        image: url({down_arrow_disabled_path});
+    }}
+
+    QComboBox QAbstractItemView {{
+        background-color: #3c3c3c;
+        color: #e0e0e0;
+        selection-background-color: #0d47a1;
+        selection-color: #ffffff;
+        border: 1px solid #555555;
+    }}
+
+    QCheckBox {{
+        color: #e0e0e0;
+        spacing: 5px;
+    }}
+
+    QCheckBox::indicator {{
+        width: 18px;
+        height: 18px;
+        border: 2px solid #555555;
+        border-radius: 3px;
+        background-color: #3c3c3c;
+    }}
+
+    QCheckBox::indicator:hover {{
+        border: 2px solid #666666;
+    }}
+
+    QCheckBox::indicator:checked {{
+        background-color: #1e88e5;
+        border: 2px solid #1e88e5;
+        image: url({checkmark_path});
+    }}
+
+    QCheckBox::indicator:disabled {{
+        background-color: #2b2b2b;
+        border: 2px solid #3c3c3c;
+    }}
+
+    QCheckBox::indicator:checked:disabled {{
+        background-color: #2b2b2b;
+        border: 2px solid #3c3c3c;
+        image: url({checkmark_disabled_path});
+    }}
+
+    QProgressBar {{
+        background-color: #3c3c3c;
+        border: 1px solid #555555;
+        border-radius: 3px;
+        text-align: center;
+        color: #e0e0e0;
+    }}
+
+    QProgressBar::chunk {{
+        background-color: #1e88e5;
+        border-radius: 2px;
+    }}
+
+    QGroupBox {{
+        color: #e0e0e0;
+        border: 1px solid #555555;
+        border-radius: 5px;
+        margin-top: 10px;
+        padding-top: 10px;
+        font-weight: bold;
+    }}
+
+    QGroupBox::title {{
+        subcontrol-origin: margin;
+        subcontrol-position: top left;
+        left: 10px;
+        padding: 0 5px;
+        background-color: #2b2b2b;
+    }}
+
+    QTabWidget::pane {{
+        border: 1px solid #555555;
+        background-color: #2b2b2b;
+        border-radius: 3px;
+    }}
+
+    QTabBar::tab {{
+        background-color: #3c3c3c;
+        color: #e0e0e0;
+        border: 1px solid #555555;
+        border-bottom: none;
+        padding: 8px 20px;
+        margin-right: 2px;
+        border-top-left-radius: 4px;
+        border-top-right-radius: 4px;
+    }}
+
+    QTabBar::tab:selected {{
+        background-color: #2b2b2b;
+        border-bottom: 2px solid #1e88e5;
+    }}
+
+    QTabBar::tab:hover:!selected {{
+        background-color: #4a4a4a;
+    }}
+
+    QPlainTextEdit, QTextEdit {{
+        background-color: #1e1e1e;
+        color: #e0e0e0;
+        border: 1px solid #555555;
+        border-radius: 3px;
+        selection-background-color: #0d47a1;
+    }}
+
+    QScrollArea {{
+        background-color: #2b2b2b;
+        border: none;
+    }}
+
+    QScrollBar:vertical {{
+        background-color: transparent;
+        width: 10px;
+        border: none;
+        margin: 0px;
+    }}
+
+    QScrollBar::handle:vertical {{
+        background-color: #4a4a4a;
+        border-radius: 5px;
+        min-height: 30px;
+        margin: 2px 2px 2px 2px;
+    }}
+
+    QScrollBar::handle:vertical:hover {{
+        background-color: #5a5a5a;
+    }}
+
+    QScrollBar::handle:vertical:pressed {{
+        background-color: #6a6a6a;
+    }}
+
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+        height: 0px;
+        border: none;
+        background: none;
+    }}
+
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+        background: none;
+    }}
+
+    QScrollBar:horizontal {{
+        background-color: transparent;
+        height: 10px;
+        border: none;
+        margin: 0px;
+    }}
+
+    QScrollBar::handle:horizontal {{
+        background-color: #4a4a4a;
+        border-radius: 5px;
+        min-width: 30px;
+        margin: 2px 2px 2px 2px;
+    }}
+
+    QScrollBar::handle:horizontal:hover {{
+        background-color: #5a5a5a;
+    }}
+
+    QScrollBar::handle:horizontal:pressed {{
+        background-color: #6a6a6a;
+    }}
+
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+        width: 0px;
+        border: none;
+        background: none;
+    }}
+
+    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+        background: none;
+    }}
+
+    QFrame[frameShape="4"], QFrame[frameShape="5"] {{
+        color: #555555;
+    }}
+
+    QSpinBox::up-button, QDoubleSpinBox::up-button {{
+        background-color: #3c3c3c;
+        border-left: 1px solid #555555;
+        width: 16px;
+    }}
+
+    QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover {{
+        background-color: #4a4a4a;
+    }}
+
+    QSpinBox::down-button, QDoubleSpinBox::down-button {{
+        background-color: #3c3c3c;
+        border-left: 1px solid #555555;
+        width: 16px;
+    }}
+
+    QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+        background-color: #4a4a4a;
+    }}
+
+    QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+        image: url({up_arrow_path});
+        width: 12px;
+        height: 12px;
+    }}
+
+    QSpinBox::up-arrow:disabled, QDoubleSpinBox::up-arrow:disabled {{
+        image: url({up_arrow_disabled_path});
+    }}
+
+    QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+        image: url({down_arrow_path});
+        width: 12px;
+        height: 12px;
+    }}
+
+    QSpinBox::down-arrow:disabled, QDoubleSpinBox::down-arrow:disabled {{
+        image: url({down_arrow_disabled_path});
+    }}
+    """.format(down_arrow_path=down_arrow_path, up_arrow_path=up_arrow_path,
+               down_arrow_disabled_path=down_arrow_disabled_path, up_arrow_disabled_path=up_arrow_disabled_path,
+               checkmark_path=checkmark_path, checkmark_disabled_path=checkmark_disabled_path)
+
+    app.setStyleSheet(dark_stylesheet)
+
     w = Main()
     w.show()
-    sys.exit(app.exec_())
+
+    exit_code = app.exec_()
+
+    # Clean up temporary files
+    try:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+    sys.exit(exit_code)

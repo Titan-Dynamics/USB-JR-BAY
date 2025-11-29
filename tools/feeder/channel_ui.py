@@ -85,8 +85,6 @@ class ChannelRow(QtWidgets.QWidget):
         self.bar.setRange(0, 2000)
 
         self.val = QtWidgets.QLabel("1500")
-        self.val.setMaximumWidth(60)
-        self.val.setMinimumWidth(60)
 
         self.src = QtWidgets.QComboBox()
         self.src.addItems(SRC_CHOICES)
@@ -98,20 +96,28 @@ class ChannelRow(QtWidgets.QWidget):
         self.idxBox.setValue(cfg.get("idx", 0))
         self.idxBox.setMaximumWidth(60)
 
-        self.inv = QtWidgets.QCheckBox("inv")
+        self.inv = QtWidgets.QCheckBox("Reverse")
         self.inv.setChecked(cfg.get("inv", False))
-        self.inv.setMaximumWidth(60)
+        self.inv.setMaximumWidth(80)
 
         self.toggleBox = QtWidgets.QCheckBox("Toggle")
         self.toggleBox.setChecked(cfg.get("toggle", False))
         self.toggleBox.setMaximumWidth(80)
 
-        self.toggleGroupBox = QtWidgets.QSpinBox()
-        self.toggleGroupBox.setRange(0, 15)
-        # If toggle_group is not in config, assign a unique group per channel
-        default_group = cfg.get("toggle_group", idx % 16)
-        self.toggleGroupBox.setValue(default_group)
-        self.toggleGroupBox.setMaximumWidth(60)
+        self.toggleGroupBox = QtWidgets.QComboBox()
+        self.toggleGroupBox.addItem("None")  # Index 0 = None (stored as -1)
+        for i in range(1, 9):  # Groups 1-8 (indices 1-8, stored as 0-7)
+            self.toggleGroupBox.addItem(f"Group {i}")
+        # Toggle groups: stored as -1 for None, 0-7 for Groups 1-8
+        # Default is None (-1)
+        saved_group = cfg.get("toggle_group", -1)
+        # Convert saved value to dropdown index: -1 -> 0, 0 -> 1, 1 -> 2, etc.
+        if saved_group == -1:
+            dropdown_index = 0
+        else:
+            dropdown_index = max(1, min(8, saved_group + 1))
+        self.toggleGroupBox.setCurrentIndex(dropdown_index)
+        self.toggleGroupBox.setMaximumWidth(80)
         self.toggleGroupBox.setEnabled(cfg.get("toggle", False))
 
         self.rotaryBox = QtWidgets.QCheckBox("Rotary")
@@ -153,48 +159,45 @@ class ChannelRow(QtWidgets.QWidget):
         self.maxBox.valueChanged.connect(update_bar_range)
         update_bar_range()
 
-        # Top row: full-width with scaling elements
+        # Top row: CHX, Name, Axis, IDX, Map, %, 1500
         topLayout = QtWidgets.QHBoxLayout()
         topLayout.addWidget(self.lbl)
         topLayout.addWidget(self.nameBox)
+        topLayout.addWidget(self.src)
+        self.idxLbl = QtWidgets.QLabel("idx")
+        self.idxLbl.setMaximumWidth(30)
+        topLayout.addWidget(self.idxLbl)
+        topLayout.addWidget(self.idxBox)
+        topLayout.addWidget(self.mapBtn)
         topLayout.addWidget(self.bar, 1)  # progress bar gets stretch
         topLayout.addWidget(self.val)
         layout.addLayout(topLayout, 0, 0, 1, 15)
 
-        # Bottom row: fixed-width controls
-        srcLbl = QtWidgets.QLabel("src")
-        srcLbl.setMaximumWidth(30)
-        layout.addWidget(srcLbl, 1, 0)
-        layout.addWidget(self.src, 1, 1)
-        idxLbl = QtWidgets.QLabel("idx")
-        idxLbl.setMaximumWidth(30)
-        layout.addWidget(idxLbl, 1, 2)
-        layout.addWidget(self.idxBox, 1, 3)
-        layout.addWidget(self.inv, 1, 4)
-        minLbl = QtWidgets.QLabel("min")
-        minLbl.setMaximumWidth(30)
-        layout.addWidget(minLbl, 1, 5)
-        layout.addWidget(self.minBox, 1, 6)
-        midLbl = QtWidgets.QLabel("mid")
-        midLbl.setMaximumWidth(30)
-        layout.addWidget(midLbl, 1, 7)
-        layout.addWidget(self.midBox, 1, 8)
-        maxLbl = QtWidgets.QLabel("max")
-        maxLbl.setMaximumWidth(30)
-        layout.addWidget(maxLbl, 1, 9)
-        layout.addWidget(self.maxBox, 1, 10)
-        layout.addWidget(self.mapBtn, 1, 11)
-        layout.addWidget(self.toggleBox, 1, 12)
-        layout.addWidget(self.toggleGroupBox, 1, 13)
-        layout.addWidget(self.rotaryBox, 1, 14)
-        layout.addWidget(self.rotaryStopsBox, 1, 15)
+        # Bottom row: Min, Mid, Max, Toggle, Toggle Group, Rotary, Rotary Stops, Reverse
+        self.minLbl = QtWidgets.QLabel("Min")
+        self.minLbl.setMaximumWidth(30)
+        layout.addWidget(self.minLbl, 1, 0)
+        layout.addWidget(self.minBox, 1, 1)
+        self.midLbl = QtWidgets.QLabel("Mid")
+        self.midLbl.setMaximumWidth(30)
+        layout.addWidget(self.midLbl, 1, 2)
+        layout.addWidget(self.midBox, 1, 3)
+        self.maxLbl = QtWidgets.QLabel("Max")
+        self.maxLbl.setMaximumWidth(30)
+        layout.addWidget(self.maxLbl, 1, 4)
+        layout.addWidget(self.maxBox, 1, 5)
+        layout.addWidget(self.toggleBox, 1, 6)
+        layout.addWidget(self.toggleGroupBox, 1, 7)
+        layout.addWidget(self.rotaryBox, 1, 8)
+        layout.addWidget(self.rotaryStopsBox, 1, 9)
+        layout.addWidget(self.inv, 1, 10)
 
         # Connect signals
         self.nameBox.textChanged.connect(self.changed.emit)
         self.src.currentIndexChanged.connect(self._update_visual_state)
         self.rotaryBox.toggled.connect(self._update_visual_state)
         self.toggleBox.toggled.connect(self._on_toggle_changed)
-        self.toggleGroupBox.valueChanged.connect(self.changed.emit)
+        self.toggleGroupBox.currentIndexChanged.connect(self.changed.emit)
         self.rotaryBox.toggled.connect(self._on_rotary_changed)
 
         for w in [self.src, self.idxBox, self.inv, self.minBox, self.midBox, self.maxBox]:
@@ -244,19 +247,34 @@ class ChannelRow(QtWidgets.QWidget):
             self.maxBox,
         ]
 
+        # List of labels to gray out when disabled
+        labels_to_control = [
+            self.idxLbl,
+            self.minLbl,
+            self.midLbl,
+            self.maxLbl,
+        ]
+
         for widget in widgets_to_control:
             widget.setEnabled(is_mapped)
             if not is_mapped:
-                widget.setStyleSheet("color: gray;")
+                widget.setStyleSheet("color: #666666;")
             else:
                 widget.setStyleSheet("")
+
+        # Gray out labels when channel is disabled
+        for label in labels_to_control:
+            if not is_mapped:
+                label.setStyleSheet("color: #666666;")
+            else:
+                label.setStyleSheet("")
 
         # Toggle and rotary only enabled for button source
         self.toggleBox.setEnabled(is_mapped and not is_axis)
         self.rotaryBox.setEnabled(is_mapped and not is_axis)
-        if is_axis:
-            self.toggleBox.setStyleSheet("color: gray;")
-            self.rotaryBox.setStyleSheet("color: gray;")
+        if not is_mapped or is_axis:
+            self.toggleBox.setStyleSheet("color: #666666;")
+            self.rotaryBox.setStyleSheet("color: #666666;")
             # Uncheck toggle and rotary if not a button source
             if self.toggleBox.isChecked() or self.rotaryBox.isChecked():
                 self.toggleBox.blockSignals(True)
@@ -274,8 +292,8 @@ class ChannelRow(QtWidgets.QWidget):
         # Inv button disabled if rotary is selected
         is_rotary = self.rotaryBox.isChecked()
         self.inv.setEnabled(is_mapped and not is_rotary)
-        if is_rotary:
-            self.inv.setStyleSheet("color: gray;")
+        if not is_mapped or is_rotary:
+            self.inv.setStyleSheet("color: #666666;")
         else:
             self.inv.setStyleSheet("")
 
@@ -365,12 +383,6 @@ class ChannelRow(QtWidgets.QWidget):
                 # Direct mode: button press = max, release = min
                 eff = v
                 out = mx if (eff ^ inv) else mn
-            try:
-                self.debug.emit(
-                    f"CH{self.idx+1} button idx={idx} raw={v}, inv={inv}, min={mn}, max={mx} -> out={out}"
-                )
-            except Exception:
-                pass
             self._btn_last = v
         else:
             # src == "none": non-mapped channel
@@ -386,13 +398,20 @@ class ChannelRow(QtWidgets.QWidget):
         Returns:
             Configuration dictionary
         """
+        # Convert dropdown index to saved value: 0 -> -1, 1 -> 0, 2 -> 1, etc.
+        dropdown_index = self.toggleGroupBox.currentIndex()
+        if dropdown_index == 0:
+            saved_group = -1  # "None"
+        else:
+            saved_group = dropdown_index - 1  # Groups 1-8 stored as 0-7
+
         return {
             "name": self.nameBox.text(),
             "src": self.src.currentText(),
             "idx": self.idxBox.value(),
             "inv": self.inv.isChecked(),
             "toggle": self.toggleBox.isChecked(),
-            "toggle_group": self.toggleGroupBox.value(),
+            "toggle_group": saved_group,
             "rotary": self.rotaryBox.isChecked(),
             "rotary_stops": self.rotaryStopsBox.value(),
             "min": self.minBox.value(),
