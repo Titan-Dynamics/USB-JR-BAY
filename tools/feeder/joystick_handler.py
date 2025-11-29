@@ -119,7 +119,7 @@ class JoystickHandler(QtCore.QObject):
 
         Returns:
             Tuple of (axes, buttons) where:
-            - axes: List of axis values (-1.0 to 1.0)
+            - axes: List of axis values (-1.0 to 1.0), includes hat as last 2 axes (x, y)
             - buttons: List of button states (0 or 1)
         """
         # Prefer hotplug events if available for immediate reconnect
@@ -143,6 +143,11 @@ class JoystickHandler(QtCore.QObject):
                     axes.append(self.j.get_axis(i))
                 for i in range(self.j.get_numbuttons()):
                     btns.append(1 if self.j.get_button(i) else 0)
+                # Read POV hat as two separate axes (left/right and up/down)
+                for i in range(self.j.get_numhats()):
+                    hat = self.j.get_hat(i)
+                    axes.append(float(hat[0]))  # Left/right (-1, 0, 1)
+                    axes.append(float(hat[1]))  # Up/down (-1, 0, 1)
             except pygame.error:
                 # Lost joystick during read
                 self.status.emit(f"Joystick '{self.name}' lost. Scanning...")
