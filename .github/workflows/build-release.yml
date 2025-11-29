@@ -53,7 +53,7 @@ jobs:
       - name: Build executable with PyInstaller
         run: |
           cd tools/feeder
-          pyinstaller --onefile --windowed --icon="icon.ico" --name="USB JR Bay" feeder.py
+          pyinstaller --onefile --windowed --icon="icon.ico" --add-data "icon.ico;." --name="USB JR Bay" feeder.py
         shell: bash
 
       - name: Upload build artifact

@@ -46,7 +46,10 @@ class Main(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"ELRS Calibrator + Link Stats - v{VERSION} ({GIT_SHA})")
-        self.setWindowIcon(QIcon('icon.ico'))
+        # Get the icon path - works both when running as script and as PyInstaller bundle
+        icon_path = self._get_icon_path()
+        if icon_path and os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
         self.resize(1500, 950)
         self.cfg = DEFAULT_CFG.copy()
         self._load_cfg()
@@ -481,6 +484,17 @@ class Main(QtWidgets.QWidget):
                 json.dump(self.cfg, f, indent=2)
         except Exception as e:
             self.onDebug(f"Save error: {e}")
+
+    def _get_icon_path(self):
+        """Get the path to icon.ico, handling both PyInstaller bundle and normal execution"""
+        try:
+            # PyInstaller creates a temp folder and stores path in _MEIPASS
+            base_path = sys._MEIPASS
+        except AttributeError:
+            # Not running as PyInstaller bundle, use script directory
+            base_path = os.path.dirname(os.path.abspath(__file__))
+
+        return os.path.join(base_path, 'icon.ico')
 
     def _load_cfg(self):
         try:
