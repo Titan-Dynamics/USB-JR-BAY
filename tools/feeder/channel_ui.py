@@ -373,12 +373,6 @@ class ChannelRow(QtWidgets.QWidget):
                 # Direct mode: button press = max, release = min
                 eff = v
                 out = mx if (eff ^ inv) else mn
-            try:
-                self.debug.emit(
-                    f"CH{self.idx+1} button idx={idx} raw={v}, inv={inv}, min={mn}, max={mx} -> out={out}"
-                )
-            except Exception:
-                pass
             self._btn_last = v
         else:
             # src == "none": non-mapped channel
