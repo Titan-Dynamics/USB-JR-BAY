@@ -308,7 +308,7 @@ class Main(QtWidgets.QWidget):
         config_tab = QtWidgets.QWidget()
         config_layout = QtWidgets.QVBoxLayout(config_tab)
         # Leave blank for now
-        self.tabs.addTab(config_tab, "Module settings")
+        self.tabs.addTab(config_tab, "Module Settings")
         config_tab.setMinimumSize(400, 300)
         # Loading indicator for config tab (indeterminate progress)
         self.config_loading = QtWidgets.QProgressBar()
