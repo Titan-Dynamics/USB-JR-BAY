@@ -85,8 +85,6 @@ class ChannelRow(QtWidgets.QWidget):
         self.bar.setRange(0, 2000)
 
         self.val = QtWidgets.QLabel("1500")
-        self.val.setMaximumWidth(60)
-        self.val.setMinimumWidth(60)
 
         self.src = QtWidgets.QComboBox()
         self.src.addItems(SRC_CHOICES)
@@ -106,12 +104,20 @@ class ChannelRow(QtWidgets.QWidget):
         self.toggleBox.setChecked(cfg.get("toggle", False))
         self.toggleBox.setMaximumWidth(80)
 
-        self.toggleGroupBox = QtWidgets.QSpinBox()
-        self.toggleGroupBox.setRange(0, 15)
-        # If toggle_group is not in config, assign a unique group per channel
-        default_group = cfg.get("toggle_group", idx % 16)
-        self.toggleGroupBox.setValue(default_group)
-        self.toggleGroupBox.setMaximumWidth(60)
+        self.toggleGroupBox = QtWidgets.QComboBox()
+        self.toggleGroupBox.addItem("None")  # Index 0 = None (stored as -1)
+        for i in range(1, 9):  # Groups 1-8 (indices 1-8, stored as 0-7)
+            self.toggleGroupBox.addItem(f"Group {i}")
+        # Toggle groups: stored as -1 for None, 0-7 for Groups 1-8
+        # Default is None (-1)
+        saved_group = cfg.get("toggle_group", -1)
+        # Convert saved value to dropdown index: -1 -> 0, 0 -> 1, 1 -> 2, etc.
+        if saved_group == -1:
+            dropdown_index = 0
+        else:
+            dropdown_index = max(1, min(8, saved_group + 1))
+        self.toggleGroupBox.setCurrentIndex(dropdown_index)
+        self.toggleGroupBox.setMaximumWidth(80)
         self.toggleGroupBox.setEnabled(cfg.get("toggle", False))
 
         self.rotaryBox = QtWidgets.QCheckBox("Rotary")
@@ -191,7 +197,7 @@ class ChannelRow(QtWidgets.QWidget):
         self.src.currentIndexChanged.connect(self._update_visual_state)
         self.rotaryBox.toggled.connect(self._update_visual_state)
         self.toggleBox.toggled.connect(self._on_toggle_changed)
-        self.toggleGroupBox.valueChanged.connect(self.changed.emit)
+        self.toggleGroupBox.currentIndexChanged.connect(self.changed.emit)
         self.rotaryBox.toggled.connect(self._on_rotary_changed)
 
         for w in [self.src, self.idxBox, self.inv, self.minBox, self.midBox, self.maxBox]:
@@ -373,13 +379,20 @@ class ChannelRow(QtWidgets.QWidget):
         Returns:
             Configuration dictionary
         """
+        # Convert dropdown index to saved value: 0 -> -1, 1 -> 0, 2 -> 1, etc.
+        dropdown_index = self.toggleGroupBox.currentIndex()
+        if dropdown_index == 0:
+            saved_group = -1  # "None"
+        else:
+            saved_group = dropdown_index - 1  # Groups 1-8 stored as 0-7
+
         return {
             "name": self.nameBox.text(),
             "src": self.src.currentText(),
             "idx": self.idxBox.value(),
             "inv": self.inv.isChecked(),
             "toggle": self.toggleBox.isChecked(),
-            "toggle_group": self.toggleGroupBox.value(),
+            "toggle_group": saved_group,
             "rotary": self.rotaryBox.isChecked(),
             "rotary_stops": self.rotaryStopsBox.value(),
             "min": self.minBox.value(),

@@ -460,7 +460,12 @@ class Main(QtWidgets.QWidget):
         groups = {}
         for i, row in enumerate(self.rows):
             if row.toggleBox.isChecked():
-                group_id = row.toggleGroupBox.value()
+                # Convert dropdown index to group ID: 0 = None (-1), 1-8 = Groups 1-8 (0-7)
+                dropdown_index = row.toggleGroupBox.currentIndex()
+                if dropdown_index == 0:
+                    # Skip toggles with group "None" - they are independent
+                    continue
+                group_id = dropdown_index - 1  # Convert to 0-7 for Groups 1-8
                 if group_id not in groups:
                     groups[group_id] = []
                 groups[group_id].append((i, row))
