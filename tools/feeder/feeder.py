@@ -44,6 +44,10 @@ TELEMETRY_UNIT_MAP = {
 
 SEND_HZ = 60
 
+def tpwr_to_mw_string(crsfpower):
+    return {1: "10mW", 2: "25mW", 3: "100mW", 4: "500mW", 5: "1000mW",
+            6: "2000mW", 7: "250mW", 8: "50mW"}.get(crsfpower, "Unknown")
+
 
 class Main(QtWidgets.QWidget):
     def __init__(self):
@@ -130,11 +134,9 @@ class Main(QtWidgets.QWidget):
         port_layout.addWidget(jr_divider)
 
         # Module status after divider
-        self.txStatusLabel = QtWidgets.QLabel("Module: Disconnected")
+        self.txStatusLabel = QtWidgets.QLabel("No module detected")
         self.txStatusLabel.setStyleSheet("color: red; font-weight: bold;")
         port_layout.addWidget(self.txStatusLabel)
-
-        # Packet Rate is now displayed in the Configuration tab
 
         port_layout.addStretch()
 
@@ -187,9 +189,11 @@ class Main(QtWidgets.QWidget):
         for key in ["1RSS","2RSS","RSNR","TRSS","TSNR","LQ","TLQ","RFMD","TPWR"]:
             box = QtWidgets.QGroupBox(key)
             lab = QtWidgets.QLabel("--")
-            lab.setAlignment(QtCore.Qt.AlignCenter)
+            lab.setAlignment(QtCore.Qt.AlignCenter | QtCore.Qt.AlignVCenter)
             f = lab.font(); f.setPointSize(14); lab.setFont(f)
-            v = QtWidgets.QVBoxLayout(box); v.addWidget(lab)
+            v = QtWidgets.QVBoxLayout(box)
+            v.setContentsMargins(5, 0, 0, 10)
+            v.addWidget(lab, alignment=QtCore.Qt.AlignCenter)
             tel.addWidget(box)
             self.telLabels[key] = lab
 
@@ -202,7 +206,7 @@ class Main(QtWidgets.QWidget):
         self.log.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.log.setFixedHeight(140)
 
-        # Tabs for Channels and Configuration
+        # Tabs for Channels and Module Settings
         self.tabs = QtWidgets.QTabWidget()
 
         # Channels tab
@@ -211,13 +215,13 @@ class Main(QtWidgets.QWidget):
         channels_layout.addWidget(ch_scroll)
         self.tabs.addTab(channels_tab, "Channels")
 
-        # Configuration tab
-        config_tab = QtWidgets.QWidget()
-        config_layout = QtWidgets.QVBoxLayout(config_tab)
+        # Module Settings tab
+        module_settings = QtWidgets.QWidget()
+        config_layout = QtWidgets.QVBoxLayout(module_settings)
         # Leave blank for now
-        self.tabs.addTab(config_tab, "Configuration")
-        config_tab.setMinimumSize(400, 300)
-        # Loading indicator for config tab (indeterminate progress)
+        self.tabs.addTab(module_settings, "Module Settings")
+        module_settings.setMinimumSize(400, 300)
+        # Loading indicator for module_settings tab (indeterminate progress)
         self.config_loading = QtWidgets.QProgressBar()
         self.config_loading.setRange(0, 0)  # indeterminate
         self.config_loading.setMaximumHeight(12)
@@ -267,16 +271,20 @@ class Main(QtWidgets.QWidget):
         for k, v in d.items():
             if k in self.telLabels:
                 try:
-                    unit = TELEMETRY_UNIT_MAP.get(k)
-                    if unit and v is not None:
-                        # display numeric values with units
-                        # Keep simple formatting — if it's int or float show without extra quirks
-                        if isinstance(v, float):
-                            text = f"{v:.1f} {unit}"
-                        else:
-                            text = f"{v} {unit}"
+                    # Special handling for TPWR - convert to mW string
+                    if k == 'TPWR' and v is not None:
+                        text = tpwr_to_mw_string(v)
                     else:
-                        text = str(v)
+                        unit = TELEMETRY_UNIT_MAP.get(k)
+                        if unit and v is not None:
+                            # display numeric values with units
+                            # Keep simple formatting — if it's int or float show without extra quirks
+                            if isinstance(v, float):
+                                text = f"{v:.1f} {unit}"
+                            else:
+                                text = f"{v} {unit}"
+                        else:
+                            text = str(v)
                 except Exception:
                     text = str(v)
                 self.telLabels[k].setText(text)
@@ -569,10 +577,6 @@ class Main(QtWidgets.QWidget):
         self.serThread.reconnect(port, DEFAULT_BAUD)
         self.save_cfg()
 
-
-    # Packet rate moved into the Configuration tab as a standard 'select' field.
-    # Writes are handled via the combo control in the config tab which calls _on_param_changed.
-
     def _on_param_changed(self, fid, value):
         """Handle parameter change from config tab"""
         if hasattr(self, 'current_device_id'):
@@ -676,7 +680,11 @@ class Main(QtWidgets.QWidget):
 
             # Add all link stats fields
             for field in self.csv_fieldnames[1:]:  # Skip 'timestamp'
-                row[field] = stats_dict.get(field, '')
+                value = stats_dict.get(field, '')
+                # Convert TPWR to mW string for CSV
+                if field == 'TPWR' and value != '':
+                    value = tpwr_to_mw_string(value)
+                row[field] = value
 
             # Append to CSV file
             with open(self.csv_filename, 'a', newline='') as csvfile:
@@ -718,10 +726,6 @@ class Main(QtWidgets.QWidget):
     def _on_device_parameters_loaded(self, src: int, details: dict):
         # Populate packet rate dropdown when parameters are loaded
         fields = details.get('fields', {})
-        for fid, field in fields.items():
-            # Packet Rate combo moved into the configuration tab UI; the config tab will populate it
-            # The _populate_config_tab function will create a QComboBox for this field like any other select.
-            pass
 
         # Only populate config tab after the serial thread indicates the device is fully loaded
         loaded = details.get('loaded', False)
@@ -745,7 +749,7 @@ class Main(QtWidgets.QWidget):
             pass
 
         # Populate config tab with all parameters (full reload only after device loaded)
-        self._populate_config_tab(fields, src)
+        self._populate_module_settings(fields, src)
         # Clear pending writes that are now reflected by the device
         try:
             # Walk pending writes list and remove if device now reports same value
@@ -883,13 +887,13 @@ class Main(QtWidgets.QWidget):
         except Exception as e:
             self.onDebug(f"_on_device_parameter_field_updated error: {e}")
 
-    def _populate_config_tab(self, fields, src):
-        # Clear existing widgets in config tab
-        config_tab = self.tabs.widget(1)  # Configuration tab
-        if config_tab.layout():
-            layout = config_tab.layout()
+    def _populate_module_settings(self, fields, src):
+        # Clear existing widgets in module settings tab
+        module_settings = self.tabs.widget(1)  # Module Settings tab
+        if module_settings.layout():
+            layout = module_settings.layout()
             # Clear all widgets from the existing layout
-            # some widgets in the config tab are permanent (like the loading bar)
+            # some widgets in the module settings tab are permanent (like the loading bar)
             # We'll skip deleting them here and re-insert afterwards
             keep_loading_widget = None
             while layout.count():
@@ -934,10 +938,10 @@ class Main(QtWidgets.QWidget):
                         pass
 
         # Reuse existing layout if present, otherwise create new
-        layout = config_tab.layout()
+        layout = module_settings.layout()
         if layout is None:
-            layout = QtWidgets.QVBoxLayout(config_tab)
-            config_tab.setLayout(layout)
+            layout = QtWidgets.QVBoxLayout(module_settings)
+            module_settings.setLayout(layout)
 
         # Reset widget mapping for this repopulation
         try:
@@ -947,7 +951,7 @@ class Main(QtWidgets.QWidget):
         # Create scrollable area
         # Remove any existing scroll area if present
         # (look for first QScrollArea child and delete it to avoid duplicates)
-        for child in config_tab.findChildren(QtWidgets.QScrollArea):
+        for child in module_settings.findChildren(QtWidgets.QScrollArea):
             try:
                 child.setParent(None)
                 child.deleteLater()
@@ -959,7 +963,7 @@ class Main(QtWidgets.QWidget):
         widget = QtWidgets.QWidget()
         widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         inner_layout = QtWidgets.QVBoxLayout(widget)
-        # Add a small toolbar with a Refresh button at the top of the config tab
+        # Add a small toolbar with a Refresh button at the top of the module settings tab
         toolbar = QtWidgets.QHBoxLayout()
         refresh_btn = QtWidgets.QPushButton("Refresh")
         refresh_btn.setMaximumWidth(120)
@@ -1023,7 +1027,7 @@ class Main(QtWidgets.QWidget):
         for fid, field in fields.items():
             try:
                 name = field.get('name', '')
-                # include Packet Rate in the config tab like any other field
+                # include Packet Rate in the module settings tab like any other field
                 ftype = field.get('type', 0)
                 parent = field.get('parent', 0)
                 # determine which layout to add to (parent grouping)
@@ -1233,7 +1237,7 @@ class Main(QtWidgets.QWidget):
         # Only set current_device_id for TX modules, not receivers
         if src in (CRSF_ADDRESS_CRSF_TRANSMITTER, CRSF_ADDRESS_TRANSMITTER_LEGACY):
             self.current_device_id = src
-        config_tab.update()
+        module_settings.update()
         self.tabs.update()
         self.tabs.repaint()
         widget.update()
