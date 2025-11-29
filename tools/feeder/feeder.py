@@ -48,7 +48,7 @@ SEND_HZ = 60
 class Main(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"ELRS Calibrator + Link Stats - v{VERSION} ({GIT_SHA})")
+        self.setWindowTitle(f"USB JR Bay - v{VERSION} ({GIT_SHA})")
         # Get the icon path - works both when running as script and as PyInstaller bundle
         icon_path = self._get_icon_path()
         if icon_path and os.path.exists(icon_path):
