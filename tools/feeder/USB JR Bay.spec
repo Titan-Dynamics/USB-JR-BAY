@@ -35,5 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['C:\\Users\\MohammadAdib\\Documents\\GitHub\\USB-JR-ELRS\\tools\\feeder\\icon.ico'],
+    icon=['icon.ico'],
 )
