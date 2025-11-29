@@ -142,60 +142,8 @@ class Main(QtWidgets.QWidget):
         self.serThread.channels_update.connect(self.onChannels)
         self.serThread.sync_update.connect(self.onSync)
 
-        # Serial port selection controls
-        port_widget = QtWidgets.QWidget()
-        port_layout = QtWidgets.QHBoxLayout(port_widget)
-        port_layout.setContentsMargins(0, 5, 0, 5)
-        # Joystick status at far left
-        self.joyStatusLabel = QtWidgets.QLabel("Scanning for joystick...")
-        self.joyStatusLabel.setStyleSheet("color: red; font-weight: bold;")
-        port_layout.addWidget(self.joyStatusLabel)
-
-        # Divider between joystick status and COM controls
-        joy_divider = QtWidgets.QFrame()
-        joy_divider.setFrameShape(QtWidgets.QFrame.VLine)
-        joy_divider.setFrameShadow(QtWidgets.QFrame.Sunken)
-        joy_divider.setLineWidth(2)
-        port_layout.addWidget(joy_divider)
-
-        # Serial COM controls
-        port_layout.addWidget(QtWidgets.QLabel("COM Port:"))
-
-        self.portCombo = QtWidgets.QComboBox()
-        self.portCombo.setMinimumWidth(80)
-        self._refresh_port_list()
-        self.portCombo.setCurrentText(self.cfg["serial_port"])
-        self.portCombo.currentTextChanged.connect(self._on_port_changed)
-        port_layout.addWidget(self.portCombo)
-
-        refresh_btn = QtWidgets.QPushButton("Refresh")
-        refresh_btn.clicked.connect(self._refresh_port_list)
-        refresh_btn.setMaximumWidth(80)
-        port_layout.addWidget(refresh_btn)
-
-        # JR Bay status right after the port controls
-        self.jrBayStatusLabel = QtWidgets.QLabel("Disconnected")
-        self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
-        port_layout.addWidget(self.jrBayStatusLabel)
-
-        # Divider after JR Bay status
-        jr_divider = QtWidgets.QFrame()
-        jr_divider.setFrameShape(QtWidgets.QFrame.VLine)
-        jr_divider.setFrameShadow(QtWidgets.QFrame.Sunken)
-        jr_divider.setLineWidth(2)
-        port_layout.addWidget(jr_divider)
-
-        # Module status after divider
-        self.txStatusLabel = QtWidgets.QLabel("No module detected")
-        self.txStatusLabel.setStyleSheet("color: red; font-weight: bold;")
-        port_layout.addWidget(self.txStatusLabel)
-
-        # Packet Rate is now displayed in the Configuration tab
-
-        port_layout.addStretch()
-
-        port_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        layout.addWidget(port_widget)
+        # Module status (will be updated in window title)
+        self._module_status = "No module detected"
 
         # Joystick (auto-scanning) - using JoystickHandler instead of Joy
         self.joy = JoystickHandler()
@@ -301,6 +249,49 @@ class Main(QtWidgets.QWidget):
         # Channels tab
         channels_tab = QtWidgets.QWidget()
         channels_tab_layout = QtWidgets.QVBoxLayout(channels_tab)
+
+        # Status bar at top of Configuration tab
+        port_widget = QtWidgets.QWidget()
+        port_layout = QtWidgets.QHBoxLayout(port_widget)
+        port_layout.setContentsMargins(0, 5, 0, 5)
+
+        # Controller status at far left
+        self.joyStatusLabel = QtWidgets.QLabel("Scanning for controller...")
+        self.joyStatusLabel.setStyleSheet("color: red; font-weight: bold;")
+        port_layout.addWidget(self.joyStatusLabel)
+
+        # Divider between controller status and COM controls
+        joy_divider = QtWidgets.QFrame()
+        joy_divider.setFrameShape(QtWidgets.QFrame.VLine)
+        joy_divider.setFrameShadow(QtWidgets.QFrame.Sunken)
+        joy_divider.setLineWidth(2)
+        port_layout.addWidget(joy_divider)
+
+        # Serial COM controls
+        port_layout.addWidget(QtWidgets.QLabel("COM Port:"))
+
+        self.portCombo = QtWidgets.QComboBox()
+        self.portCombo.setMinimumWidth(80)
+        self._refresh_port_list()
+        self.portCombo.setCurrentText(self.cfg["serial_port"])
+        self.portCombo.currentTextChanged.connect(self._on_port_changed)
+        port_layout.addWidget(self.portCombo)
+
+        refresh_btn = QtWidgets.QPushButton("Refresh")
+        refresh_btn.clicked.connect(self._refresh_port_list)
+        refresh_btn.setMaximumWidth(80)
+        port_layout.addWidget(refresh_btn)
+
+        # JR Bay status right after the port controls
+        self.jrBayStatusLabel = QtWidgets.QLabel("Disconnected")
+        self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
+        port_layout.addWidget(self.jrBayStatusLabel)
+
+        port_layout.addStretch()
+
+        port_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        channels_tab_layout.addWidget(port_widget)
+
         channels_tab_layout.addLayout(content_layout)
         self.tabs.addTab(channels_tab, "Configuration")
 
@@ -308,7 +299,7 @@ class Main(QtWidgets.QWidget):
         config_tab = QtWidgets.QWidget()
         config_layout = QtWidgets.QVBoxLayout(config_tab)
         # Leave blank for now
-        self.tabs.addTab(config_tab, "Module Settings")
+        self.tabs.addTab(config_tab, self._module_status)  # Set initial tab title to module status
         config_tab.setMinimumSize(400, 300)
         # Loading indicator for config tab (indeterminate progress)
         self.config_loading = QtWidgets.QProgressBar()
@@ -336,7 +327,7 @@ class Main(QtWidgets.QWidget):
 
         # Timer loop
         # Only the tabs area should expand/contract on resize
-        layout.setStretch(1, 1)
+        layout.setStretch(0, 1)  # Index 0 is the tabs widget
 
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
@@ -353,6 +344,10 @@ class Main(QtWidgets.QWidget):
         self._tx_connected = False
         # manage cooldowns for resets to avoid repeated resets in tight loops
         self._last_tx_reset_time = 0.0
+
+    def _update_module_status(self):
+        """Update module status in tab title"""
+        self.tabs.setTabText(1, self._module_status)
 
     def onTel(self, d):
         # Log to CSV
@@ -394,8 +389,8 @@ class Main(QtWidgets.QWidget):
                 pass
             # When the serial port disconnects the TX is implicitly unreachable
             try:
-                self.txStatusLabel.setText("No module detected")
-                self.txStatusLabel.setStyleSheet("color: red; font-weight: bold;")
+                self._module_status = "No module detected"
+                self._update_module_status()
                 # Disable Configuration tab when module disconnects
                 self.tabs.setTabEnabled(1, False)
             except Exception:
@@ -442,7 +437,7 @@ class Main(QtWidgets.QWidget):
             # Record heartbeat time for this TX source
             try:
                 self._last_tx_heartbeat = time.time()
-                # mark TX connected and update color/name
+                # mark TX connected and update module status
                 if not self._tx_connected:
                     self._tx_connected = True
                     # tx name from device discovery if present
@@ -453,10 +448,10 @@ class Main(QtWidgets.QWidget):
                     except Exception:
                         tx_name = None
                     if tx_name:
-                        self.txStatusLabel.setText(f"Module: {tx_name}")
+                        self._module_status = tx_name
                     else:
-                        self.txStatusLabel.setText("Module: Connected")
-                    self.txStatusLabel.setStyleSheet("color: white; font-weight: bold;")
+                        self._module_status = "Module Connected"
+                    self._update_module_status()
                     # Enable Configuration tab when module is detected
                     self.tabs.setTabEnabled(1, True)
             except Exception as e:
@@ -542,8 +537,8 @@ class Main(QtWidgets.QWidget):
             if self._tx_connected and (time.time() - self._last_tx_heartbeat) > 2.0:
                 self._tx_connected = False
                 try:
-                    self.txStatusLabel.setText("No module detected")
-                    self.txStatusLabel.setStyleSheet("color: red; font-weight: bold;")
+                    self._module_status = "No module detected"
+                    self._update_module_status()
                     # Disable Configuration tab when module disconnects
                     self.tabs.setTabEnabled(1, False)
                 except Exception:
@@ -811,10 +806,10 @@ class Main(QtWidgets.QWidget):
             # Only set current_device_id for TX modules, not receivers
             if src in (CRSF_ADDRESS_CRSF_TRANSMITTER, CRSF_ADDRESS_TRANSMITTER_LEGACY):
                 self.serThread.current_device_id = src
-                # Update the TX name in the UI; heartbeat will change the color
-                # Only update label for TX modules, not receivers
+                # Update the module name in tab title
                 try:
-                    self.txStatusLabel.setText(f"Module: {name}")
+                    self._module_status = name
+                    self._update_module_status()
                 except Exception:
                     pass
             self.onDebug(f"Device discovered: {name} addr=0x{src:02X}")
