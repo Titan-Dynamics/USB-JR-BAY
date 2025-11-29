@@ -302,7 +302,7 @@ class Main(QtWidgets.QWidget):
         channels_tab = QtWidgets.QWidget()
         channels_tab_layout = QtWidgets.QVBoxLayout(channels_tab)
         channels_tab_layout.addLayout(content_layout)
-        self.tabs.addTab(channels_tab, "Channels")
+        self.tabs.addTab(channels_tab, "Configuration")
 
         # Configuration tab
         config_tab = QtWidgets.QWidget()
