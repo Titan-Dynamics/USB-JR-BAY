@@ -9,7 +9,7 @@ from PyQt5 import QtWidgets, QtCore
 
 
 # Source type choices for channel mapping
-SRC_CHOICES = ["axis", "button", "const"]
+SRC_CHOICES = ["axis", "button", "none"]
 
 
 def map_axis_to_range(val, inv, mn, ct, mx):
@@ -91,7 +91,7 @@ class ChannelRow(QtWidgets.QWidget):
         self.src = QtWidgets.QComboBox()
         self.src.addItems(SRC_CHOICES)
         self.src.setMaximumWidth(80)
-        self.src.setCurrentText(cfg.get("src", "const"))
+        self.src.setCurrentText(cfg.get("src", "none"))
 
         self.idxBox = QtWidgets.QSpinBox()
         self.idxBox.setRange(0, 63)
@@ -227,7 +227,7 @@ class ChannelRow(QtWidgets.QWidget):
 
     def _update_visual_state(self):
         """Update visual state based on source selection."""
-        is_mapped = self.src.currentText() != "const"
+        is_mapped = self.src.currentText() != "none"
         src = self.src.currentText()
         is_axis = src == "axis"
 
@@ -363,7 +363,7 @@ class ChannelRow(QtWidgets.QWidget):
                 pass
             self._btn_last = v
         else:
-            # src == "const": unmapped channel
+            # src == "none": non-mapped channel
             out = mn
 
         self.bar.setValue(out)
@@ -394,7 +394,7 @@ class ChannelRow(QtWidgets.QWidget):
         """Set channel mapping.
 
         Args:
-            src: Source type ("axis", "button", or "const")
+            src: Source type ("axis", "button", or "none")
             idx: Source index
         """
         if src in SRC_CHOICES:

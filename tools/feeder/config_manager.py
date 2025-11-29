@@ -17,7 +17,7 @@ CHANNELS = 16
 DEFAULT_CFG = {
     "serial_port": DEFAULT_PORT,
     "channels": [
-        {"src": "const", "idx": 0, "inv": False, "min": 1000, "center": 1500, "max": 2000}
+        {"src": "none", "idx": 0, "inv": False, "min": 1000, "center": 1500, "max": 2000}
         for _ in range(CHANNELS)
     ],
 }
