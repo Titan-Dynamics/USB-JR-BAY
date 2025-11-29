@@ -5,6 +5,8 @@ on:
     branches:
       - main
       - full-overhaul
+    tags:
+      - 'v*'  # Trigger on version tags like v1.0.0
   workflow_dispatch:  # Allows manual trigger from GitHub Actions tab
 
 jobs:
@@ -62,3 +64,14 @@ jobs:
           name: USB-JR-Bay-Windows
           path: tools/feeder/dist/USB JR Bay.exe
           if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: tools/feeder/dist/USB JR Bay.exe
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
