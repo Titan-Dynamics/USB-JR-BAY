@@ -26,6 +26,30 @@ jobs:
           pip install pyinstaller
           pip install -r tools/feeder/requirements.txt
 
+      - name: Generate static version file
+        run: |
+          # Get short git SHA
+          GIT_SHA=$(git rev-parse --short=7 HEAD)
+
+          # Get semantic version from tag, or use 0.0.0-dev if not a tagged release
+          if git describe --tags --exact-match HEAD 2>/dev/null; then
+            APP_VERSION=$(git describe --tags --exact-match HEAD | sed 's/^v//')
+          else
+            APP_VERSION="0.0.0-dev"
+          fi
+
+          # Export for next steps
+          echo "GIT_SHA=$GIT_SHA" >> $GITHUB_ENV
+          echo "APP_VERSION=$APP_VERSION" >> $GITHUB_ENV
+
+          # Generate static version_info.py file that will be baked into the executable
+          cd tools/feeder
+          python generate_version.py
+        shell: bash
+        env:
+          GIT_SHA: ${{ env.GIT_SHA }}
+          APP_VERSION: ${{ env.APP_VERSION }}
+
       - name: Build executable with PyInstaller
         run: |
           cd tools/feeder

@@ -20,6 +20,7 @@ from serial_interface import SerialThread
 from joystick_handler import JoystickHandler
 from channel_ui import ChannelRow, SRC_CHOICES
 from config_manager import ConfigManager, get_available_ports, DEFAULT_BAUD, CHANNELS, DEFAULT_CFG
+from version import VERSION, GIT_SHA
 
 # Map known field names to units for numeric display in the UI
 UNIT_MAP = {
@@ -44,7 +45,7 @@ SEND_HZ = 60
 class Main(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("ELRS Calibrator + Link Stats")
+        self.setWindowTitle(f"ELRS Calibrator + Link Stats - v{VERSION} ({GIT_SHA})")
         self.setWindowIcon(QIcon('icon.ico'))
         self.resize(1500, 950)
         self.cfg = DEFAULT_CFG.copy()
@@ -226,6 +227,12 @@ class Main(QtWidgets.QWidget):
 
         # Log below telemetry
         layout.addWidget(self.log)
+
+        # Version info at the bottom
+        version_label = QtWidgets.QLabel(f"Version: {VERSION} | Git SHA: {GIT_SHA}")
+        version_label.setStyleSheet("color: grey; font-size: 9pt;")
+        version_label.setAlignment(QtCore.Qt.AlignRight)
+        layout.addWidget(version_label)
 
         # Timer loop
         # Only the tabs area should expand/contract on resize

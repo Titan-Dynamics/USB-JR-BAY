@@ -48,3 +48,6 @@ Thumbs.db
 
 # Calibration files (user-specific)
 calib.json
+
+# Generated version file (created at build time)
+version_info.py
