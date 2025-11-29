@@ -76,14 +76,15 @@ class JoystickVisualizer(QtWidgets.QWidget):
         # Draw outer square (dead zone indicator)
         painter.setPen(QPen(QColor("#555555"), 2))
         painter.setBrush(QBrush(QColor("#2b2b2b")))
-        painter.drawRect(offset_x, offset_y, size, size)
+        painter.drawRoundedRect(offset_x, offset_y, size, size, 8, 8)
 
         # Draw center crosshair
         painter.setPen(QPen(QColor("#666666"), 1))
         center_x = offset_x + size // 2
         center_y = offset_y + size // 2
-        painter.drawLine(center_x - 20, center_y, center_x + 20, center_y)
-        painter.drawLine(center_x, center_y - 20, center_x, center_y + 20)
+        crosshair_extent = size // 2 - 16  # 16px from edges
+        painter.drawLine(center_x - crosshair_extent, center_y, center_x + crosshair_extent, center_y)
+        painter.drawLine(center_x, center_y - crosshair_extent, center_x, center_y + crosshair_extent)
 
         # Calculate stick position (1000-2000 maps to 0-size)
         # Invert vertical axis (lower value = higher on screen)
@@ -185,7 +186,7 @@ class Main(QtWidgets.QWidget):
         port_layout.addWidget(jr_divider)
 
         # Module status after divider
-        self.txStatusLabel = QtWidgets.QLabel("Module: Disconnected")
+        self.txStatusLabel = QtWidgets.QLabel("No module detected")
         self.txStatusLabel.setStyleSheet("color: red; font-weight: bold;")
         port_layout.addWidget(self.txStatusLabel)
 
@@ -249,8 +250,9 @@ class Main(QtWidgets.QWidget):
         self.channel_bars = []
         for i in range(4, CHANNELS):
             bar_layout = QtWidgets.QHBoxLayout()
+            bar_layout.setSpacing(5)  # Reduce gap between label and bar
             label = QtWidgets.QLabel(f"{i+1}")
-            label.setMinimumWidth(40)
+            label.setMinimumWidth(20)
             bar = QtWidgets.QProgressBar()
             bar.setRange(1000, 2000)
             bar.setValue(1500)
@@ -306,7 +308,7 @@ class Main(QtWidgets.QWidget):
         config_tab = QtWidgets.QWidget()
         config_layout = QtWidgets.QVBoxLayout(config_tab)
         # Leave blank for now
-        self.tabs.addTab(config_tab, "Configuration")
+        self.tabs.addTab(config_tab, "Module settings")
         config_tab.setMinimumSize(400, 300)
         # Loading indicator for config tab (indeterminate progress)
         self.config_loading = QtWidgets.QProgressBar()
@@ -320,8 +322,9 @@ class Main(QtWidgets.QWidget):
         # Pending writes: fid -> (desired_value, timestamp)
         self._pending_param_writes = {}
 
-        # Set Channels as default
+        # Set Channels as default and disable Configuration tab until module detected
         self.tabs.setCurrentIndex(0)
+        self.tabs.setTabEnabled(1, False)  # Disable Configuration tab initially
 
         layout.addWidget(self.tabs)
 
@@ -391,8 +394,10 @@ class Main(QtWidgets.QWidget):
                 pass
             # When the serial port disconnects the TX is implicitly unreachable
             try:
-                self.txStatusLabel.setText("Module: Disconnected")
+                self.txStatusLabel.setText("No module detected")
                 self.txStatusLabel.setStyleSheet("color: red; font-weight: bold;")
+                # Disable Configuration tab when module disconnects
+                self.tabs.setTabEnabled(1, False)
             except Exception:
                 pass
 
@@ -452,6 +457,8 @@ class Main(QtWidgets.QWidget):
                     else:
                         self.txStatusLabel.setText("Module: Connected")
                     self.txStatusLabel.setStyleSheet("color: white; font-weight: bold;")
+                    # Enable Configuration tab when module is detected
+                    self.tabs.setTabEnabled(1, True)
             except Exception as e:
                 self.onDebug(f"onSync heartbeat update error: {e}")
         except Exception as e:
@@ -535,8 +542,10 @@ class Main(QtWidgets.QWidget):
             if self._tx_connected and (time.time() - self._last_tx_heartbeat) > 2.0:
                 self._tx_connected = False
                 try:
-                    self.txStatusLabel.setText("Module: Disconnected")
+                    self.txStatusLabel.setText("No module detected")
                     self.txStatusLabel.setStyleSheet("color: red; font-weight: bold;")
+                    # Disable Configuration tab when module disconnects
+                    self.tabs.setTabEnabled(1, False)
                 except Exception:
                     pass
                 # Reset discovery state for the TX so that a fresh device ping occurs
@@ -1645,6 +1654,12 @@ if __name__ == "__main__":
         background-color: #4a4a4a;
     }}
 
+    QTabBar::tab:disabled {{
+        background-color: #2b2b2b;
+        color: #666666;
+        border: 1px solid #3c3c3c;
+    }}
+
     QPlainTextEdit, QTextEdit {{
         background-color: #1e1e1e;
         color: #e0e0e0;
@@ -1659,7 +1674,7 @@ if __name__ == "__main__":
     }}
 
     QScrollBar:vertical {{
-        background-color: transparent;
+        background-color: #222222;
         width: 10px;
         border: none;
         margin: 0px;
@@ -1691,7 +1706,7 @@ if __name__ == "__main__":
     }}
 
     QScrollBar:horizontal {{
-        background-color: transparent;
+        background-color: #222222;
         height: 10px;
         border: none;
         margin: 0px;
