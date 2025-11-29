@@ -7,6 +7,9 @@ import json
 import time
 import re
 import threading
+import csv
+import os
+from datetime import datetime
 from PyQt5 import QtWidgets, QtCore
 from PyQt5.QtGui import QIcon
 
@@ -46,6 +49,10 @@ class Main(QtWidgets.QWidget):
         self.resize(1500, 950)
         self.cfg = DEFAULT_CFG.copy()
         self._load_cfg()
+
+        # CSV logging setup (deferred until first link stats packet)
+        self.csv_filename = None
+        self.csv_fieldnames = ['timestamp', '1RSS', '2RSS', 'LQ', 'RSNR', 'RFMD', 'TPWR', 'TRSS', 'TLQ', 'TSNR']
 
         layout = QtWidgets.QVBoxLayout(self)
 
@@ -241,6 +248,9 @@ class Main(QtWidgets.QWidget):
         self._last_tx_reset_time = 0.0
 
     def onTel(self, d):
+        # Log to CSV
+        self._log_link_stats_to_csv(d)
+
         for k, v in d.items():
             if k in self.telLabels:
                 try:
@@ -548,6 +558,12 @@ class Main(QtWidgets.QWidget):
             self.serThread.close()
         except:
             pass
+        # Close CSV logging
+        try:
+            if hasattr(self, 'csv_filename') and self.csv_filename:
+                self.onDebug(f"CSV logging stopped: {self.csv_filename}")
+        except:
+            pass
         e.accept()
 
     # --- Mapping helpers ---
@@ -568,6 +584,49 @@ class Main(QtWidgets.QWidget):
         except Exception:
             pass
         self.onDebug(f"Move an axis or press a button to map CH{row.idx+1} …")
+
+    def _setup_csv_logging(self):
+        """Initialize CSV logging for link stats on first packet"""
+        try:
+            # Create CSV filename with timestamp in the same folder as the script
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.csv_filename = os.path.join(script_dir, f"link_stats_{timestamp}.csv")
+
+            # Create CSV file and write header
+            with open(self.csv_filename, 'w', newline='') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=self.csv_fieldnames)
+                writer.writeheader()
+
+            self.onDebug(f"CSV logging started: {self.csv_filename}")
+        except Exception as e:
+            self.onDebug(f"CSV logging setup error: {e}")
+            self.csv_filename = None
+
+    def _log_link_stats_to_csv(self, stats_dict):
+        """Log link statistics to CSV file, creating file on first packet"""
+        # Create CSV file on first link stats packet
+        if self.csv_filename is None:
+            self._setup_csv_logging()
+            # If setup failed, return early
+            if self.csv_filename is None:
+                return
+
+        try:
+            # Create row with timestamp
+            row = {'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]}
+
+            # Add all link stats fields
+            for field in self.csv_fieldnames[1:]:  # Skip 'timestamp'
+                row[field] = stats_dict.get(field, '')
+
+            # Append to CSV file
+            with open(self.csv_filename, 'a', newline='') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=self.csv_fieldnames)
+                writer.writerow(row)
+        except Exception as e:
+            # Avoid spamming the log with CSV errors
+            pass
 
 
 

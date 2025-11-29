@@ -10,6 +10,7 @@ cmake-build*/
 __pycache__/
 *.py[cod]
 *.pyc
+*.csv
 
 # IDE
 /tools/feeder/.idea
