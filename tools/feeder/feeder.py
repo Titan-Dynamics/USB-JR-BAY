@@ -106,6 +106,7 @@ class Main(QtWidgets.QWidget):
         port_layout.addWidget(QtWidgets.QLabel("COM Port:"))
 
         self.portCombo = QtWidgets.QComboBox()
+        self.portCombo.setMinimumWidth(80)
         self._refresh_port_list()
         self.portCombo.setCurrentText(self.cfg["serial_port"])
         self.portCombo.currentTextChanged.connect(self._on_port_changed)
@@ -239,12 +240,6 @@ class Main(QtWidgets.QWidget):
         # Log below telemetry
         layout.addWidget(self.log)
 
-        # Version info at the bottom
-        version_label = QtWidgets.QLabel(f"Version: {VERSION} | Git SHA: {GIT_SHA}")
-        version_label.setStyleSheet("color: #888888; font-size: 9pt;")
-        version_label.setAlignment(QtCore.Qt.AlignRight)
-        layout.addWidget(version_label)
-
         # Timer loop
         # Only the tabs area should expand/contract on resize
         layout.setStretch(1, 1)
@@ -290,10 +285,9 @@ class Main(QtWidgets.QWidget):
     def onConnectionStatus(self, is_connected):
         """Update status indicator based on actual connection state"""
         if is_connected:
-            # JR Bay is simply the COM port when connected
+            # Serial port connected
             try:
-                portname = getattr(self.serThread, 'port', self.cfg.get('serial_port', 'Unknown'))
-                self.jrBayStatusLabel.setText(f"{portname}")
+                self.jrBayStatusLabel.setText("Connected")
                 self.jrBayStatusLabel.setStyleSheet("color: white; font-weight: bold;")
             except Exception:
                 pass
@@ -310,7 +304,6 @@ class Main(QtWidgets.QWidget):
                 self.txStatusLabel.setStyleSheet("color: red; font-weight: bold;")
             except Exception:
                 pass
-            # rateCombo removed; packet rate is now in the config tab
 
     def onDebug(self, s):
         try:
