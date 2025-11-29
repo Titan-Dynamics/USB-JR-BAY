@@ -1322,15 +1322,24 @@ if __name__ == "__main__":
     # Create and save arrow icons
     down_arrow = create_arrow_icon('down', '#e0e0e0', 12)
     up_arrow = create_arrow_icon('up', '#e0e0e0', 12)
+    down_arrow_disabled = create_arrow_icon('down', '#555555', 12)
+    up_arrow_disabled = create_arrow_icon('up', '#555555', 12)
     checkmark = create_checkmark_icon('#ffffff', 14)
+    checkmark_disabled = create_checkmark_icon('#555555', 14)
 
     down_arrow_path = os.path.join(temp_dir, 'down_arrow.png').replace('\\', '/')
     up_arrow_path = os.path.join(temp_dir, 'up_arrow.png').replace('\\', '/')
+    down_arrow_disabled_path = os.path.join(temp_dir, 'down_arrow_disabled.png').replace('\\', '/')
+    up_arrow_disabled_path = os.path.join(temp_dir, 'up_arrow_disabled.png').replace('\\', '/')
     checkmark_path = os.path.join(temp_dir, 'checkmark.png').replace('\\', '/')
+    checkmark_disabled_path = os.path.join(temp_dir, 'checkmark_disabled.png').replace('\\', '/')
 
     down_arrow.pixmap(12, 12).save(down_arrow_path)
     up_arrow.pixmap(12, 12).save(up_arrow_path)
+    down_arrow_disabled.pixmap(12, 12).save(down_arrow_disabled_path)
+    up_arrow_disabled.pixmap(12, 12).save(up_arrow_disabled_path)
     checkmark.pixmap(14, 14).save(checkmark_path)
+    checkmark_disabled.pixmap(14, 14).save(checkmark_disabled_path)
 
     # Apply dark theme
     dark_stylesheet = """
@@ -1354,7 +1363,7 @@ if __name__ == "__main__":
         color: #e0e0e0;
         border: 1px solid #555555;
         border-radius: 4px;
-        padding: 5px 10px;
+        padding: 3px 10px;
         min-height: 20px;
     }}
 
@@ -1425,6 +1434,10 @@ if __name__ == "__main__":
         height: 12px;
     }}
 
+    QComboBox::down-arrow:disabled {{
+        image: url({down_arrow_disabled_path});
+    }}
+
     QComboBox QAbstractItemView {{
         background-color: #3c3c3c;
         color: #e0e0e0;
@@ -1459,6 +1472,12 @@ if __name__ == "__main__":
     QCheckBox::indicator:disabled {{
         background-color: #2b2b2b;
         border: 2px solid #3c3c3c;
+    }}
+
+    QCheckBox::indicator:checked:disabled {{
+        background-color: #2b2b2b;
+        border: 2px solid #3c3c3c;
+        image: url({checkmark_disabled_path});
     }}
 
     QProgressBar {{
@@ -1600,12 +1619,22 @@ if __name__ == "__main__":
         height: 12px;
     }}
 
+    QSpinBox::up-arrow:disabled, QDoubleSpinBox::up-arrow:disabled {{
+        image: url({up_arrow_disabled_path});
+    }}
+
     QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
         image: url({down_arrow_path});
         width: 12px;
         height: 12px;
     }}
-    """.format(down_arrow_path=down_arrow_path, up_arrow_path=up_arrow_path, checkmark_path=checkmark_path)
+
+    QSpinBox::down-arrow:disabled, QDoubleSpinBox::down-arrow:disabled {{
+        image: url({down_arrow_disabled_path});
+    }}
+    """.format(down_arrow_path=down_arrow_path, up_arrow_path=up_arrow_path,
+               down_arrow_disabled_path=down_arrow_disabled_path, up_arrow_disabled_path=up_arrow_disabled_path,
+               checkmark_path=checkmark_path, checkmark_disabled_path=checkmark_disabled_path)
 
     app.setStyleSheet(dark_stylesheet)
 

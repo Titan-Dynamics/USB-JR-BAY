@@ -174,17 +174,17 @@ class ChannelRow(QtWidgets.QWidget):
         layout.addLayout(topLayout, 0, 0, 1, 15)
 
         # Bottom row: Min, Mid, Max, Toggle, Toggle Group, Rotary, Rotary Stops, Reverse
-        minLbl = QtWidgets.QLabel("Min")
-        minLbl.setMaximumWidth(30)
-        layout.addWidget(minLbl, 1, 0)
+        self.minLbl = QtWidgets.QLabel("Min")
+        self.minLbl.setMaximumWidth(30)
+        layout.addWidget(self.minLbl, 1, 0)
         layout.addWidget(self.minBox, 1, 1)
-        midLbl = QtWidgets.QLabel("Mid")
-        midLbl.setMaximumWidth(30)
-        layout.addWidget(midLbl, 1, 2)
+        self.midLbl = QtWidgets.QLabel("Mid")
+        self.midLbl.setMaximumWidth(30)
+        layout.addWidget(self.midLbl, 1, 2)
         layout.addWidget(self.midBox, 1, 3)
-        maxLbl = QtWidgets.QLabel("Max")
-        maxLbl.setMaximumWidth(30)
-        layout.addWidget(maxLbl, 1, 4)
+        self.maxLbl = QtWidgets.QLabel("Max")
+        self.maxLbl.setMaximumWidth(30)
+        layout.addWidget(self.maxLbl, 1, 4)
         layout.addWidget(self.maxBox, 1, 5)
         layout.addWidget(self.toggleBox, 1, 6)
         layout.addWidget(self.toggleGroupBox, 1, 7)
@@ -247,6 +247,14 @@ class ChannelRow(QtWidgets.QWidget):
             self.maxBox,
         ]
 
+        # List of labels to gray out when disabled
+        labels_to_control = [
+            self.idxLbl,
+            self.minLbl,
+            self.midLbl,
+            self.maxLbl,
+        ]
+
         for widget in widgets_to_control:
             widget.setEnabled(is_mapped)
             if not is_mapped:
@@ -254,10 +262,17 @@ class ChannelRow(QtWidgets.QWidget):
             else:
                 widget.setStyleSheet("")
 
+        # Gray out labels when channel is disabled
+        for label in labels_to_control:
+            if not is_mapped:
+                label.setStyleSheet("color: #666666;")
+            else:
+                label.setStyleSheet("")
+
         # Toggle and rotary only enabled for button source
         self.toggleBox.setEnabled(is_mapped and not is_axis)
         self.rotaryBox.setEnabled(is_mapped and not is_axis)
-        if is_axis:
+        if not is_mapped or is_axis:
             self.toggleBox.setStyleSheet("color: #666666;")
             self.rotaryBox.setStyleSheet("color: #666666;")
         else:
@@ -267,7 +282,7 @@ class ChannelRow(QtWidgets.QWidget):
         # Inv button disabled if rotary is selected
         is_rotary = self.rotaryBox.isChecked()
         self.inv.setEnabled(is_mapped and not is_rotary)
-        if is_rotary:
+        if not is_mapped or is_rotary:
             self.inv.setStyleSheet("color: #666666;")
         else:
             self.inv.setStyleSheet("")
