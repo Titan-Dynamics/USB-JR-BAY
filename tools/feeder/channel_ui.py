@@ -257,6 +257,16 @@ class ChannelRow(QtWidgets.QWidget):
         if is_axis:
             self.toggleBox.setStyleSheet("color: gray;")
             self.rotaryBox.setStyleSheet("color: gray;")
+            # Uncheck toggle and rotary if not a button source
+            if self.toggleBox.isChecked() or self.rotaryBox.isChecked():
+                self.toggleBox.blockSignals(True)
+                self.rotaryBox.blockSignals(True)
+                self.toggleBox.setChecked(False)
+                self.rotaryBox.setChecked(False)
+                self.toggleGroupBox.setEnabled(False)
+                self.toggleBox.blockSignals(False)
+                self.rotaryBox.blockSignals(False)
+                self.changed.emit()
         else:
             self.toggleBox.setStyleSheet("")
             self.rotaryBox.setStyleSheet("")
