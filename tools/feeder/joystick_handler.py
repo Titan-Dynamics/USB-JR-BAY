@@ -30,7 +30,7 @@ class JoystickHandler(QtCore.QObject):
         self.timer.timeout.connect(self._scan)
         self.timer.start(2000)
 
-        self.status.emit("Scanning for joystick...")
+        self.status.emit("Scanning for controller...")
 
     def _handle_device_added(self, device_index: int):
         """Handle a newly added joystick device (pygame 2+).
@@ -52,7 +52,7 @@ class JoystickHandler(QtCore.QObject):
                 self.name = self.j.get_name()
             except Exception:
                 self.name = "Joystick"
-            self.status.emit(f"Joystick connected: {self.name}")
+            self.status.emit(f"{self.name}")
         except Exception as e:
             self.status.emit(f"Joystick init error: {e}")
             self.j = None
@@ -102,13 +102,13 @@ class JoystickHandler(QtCore.QObject):
         pygame.joystick.init()
         count = pygame.joystick.get_count()
         if count == 0:
-            self.status.emit("Scanning for joystick...")
+            self.status.emit("Scanning for controller...")
         else:
             try:
                 self.j = pygame.joystick.Joystick(0)
                 self.j.init()
                 self.name = self.j.get_name()
-                self.status.emit(f"Joystick connected: {self.name}")
+                self.status.emit(f"{self.name}")
             except Exception as e:
                 self.status.emit(f"Joystick init error: {e}")
                 self.j = None
