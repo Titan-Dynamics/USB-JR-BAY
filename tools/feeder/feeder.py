@@ -92,6 +92,7 @@ class Main(QtWidgets.QWidget):
         port_layout.setContentsMargins(0, 5, 0, 5)
         # Joystick status at far left
         self.joyStatusLabel = QtWidgets.QLabel("Scanning for joystick...")
+        self.joyStatusLabel.setStyleSheet("color: red; font-weight: bold;")
         port_layout.addWidget(self.joyStatusLabel)
 
         # Divider between joystick status and COM controls
@@ -115,25 +116,26 @@ class Main(QtWidgets.QWidget):
         refresh_btn.setMaximumWidth(80)
         port_layout.addWidget(refresh_btn)
 
+        # JR Bay status right after the port controls
+        self.jrBayStatusLabel = QtWidgets.QLabel("Disconnected")
+        self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
+        port_layout.addWidget(self.jrBayStatusLabel)
+
+        # Divider after JR Bay status
+        jr_divider = QtWidgets.QFrame()
+        jr_divider.setFrameShape(QtWidgets.QFrame.VLine)
+        jr_divider.setFrameShadow(QtWidgets.QFrame.Sunken)
+        jr_divider.setLineWidth(2)
+        port_layout.addWidget(jr_divider)
+
+        # Module status after divider
+        self.txStatusLabel = QtWidgets.QLabel("Module: Disconnected")
+        self.txStatusLabel.setStyleSheet("color: red; font-weight: bold;")
+        port_layout.addWidget(self.txStatusLabel)
+
         # Packet Rate is now displayed in the Configuration tab
 
         port_layout.addStretch()
-
-        # JR Bay (UART) and TX status labels — stacked vertically
-        self.jrBayStatusLabel = QtWidgets.QLabel("JR Bay: Disconnected")
-        self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
-        self.txStatusLabel = QtWidgets.QLabel("TX: Disconnected")
-        self.txStatusLabel.setStyleSheet("color: red; font-weight: bold;")
-        # Create a small widget with vertical layout to stack the two labels
-        status_widget = QtWidgets.QWidget()
-        status_layout = QtWidgets.QVBoxLayout(status_widget)
-        status_layout.setContentsMargins(0, 0, 0, 0)
-        status_layout.setSpacing(2)
-        status_layout.addWidget(self.jrBayStatusLabel)
-        status_layout.addWidget(self.txStatusLabel)
-        # Make sure the widget doesn't expand vertically unnecessarily
-        status_widget.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
-        port_layout.addWidget(status_widget)
 
         port_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         layout.addWidget(port_widget)
@@ -291,20 +293,20 @@ class Main(QtWidgets.QWidget):
             # JR Bay is simply the COM port when connected
             try:
                 portname = getattr(self.serThread, 'port', self.cfg.get('serial_port', 'Unknown'))
-                self.jrBayStatusLabel.setText(f"JR Bay: {portname}")
-                self.jrBayStatusLabel.setStyleSheet("color: green; font-weight: bold;")
+                self.jrBayStatusLabel.setText(f"{portname}")
+                self.jrBayStatusLabel.setStyleSheet("color: white; font-weight: bold;")
             except Exception:
                 pass
         else:
             # Serial port disconnected
             try:
-                self.jrBayStatusLabel.setText("JR Bay: Disconnected")
+                self.jrBayStatusLabel.setText("Disconnected")
                 self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
             except Exception:
                 pass
             # When the serial port disconnects the TX is implicitly unreachable
             try:
-                self.txStatusLabel.setText("TX: Disconnected")
+                self.txStatusLabel.setText("Module: Disconnected")
                 self.txStatusLabel.setStyleSheet("color: red; font-weight: bold;")
             except Exception:
                 pass
@@ -320,6 +322,13 @@ class Main(QtWidgets.QWidget):
         # Show scanning/connected/disconnected messages or name
         try:
             self.joyStatusLabel.setText(str(s))
+            # Set color based on status
+            status_lower = str(s).lower()
+            if "scanning" in status_lower or "no joystick" in status_lower or "disconnected" in status_lower:
+                self.joyStatusLabel.setStyleSheet("color: red; font-weight: bold;")
+            else:
+                # Connected - show joystick name in white
+                self.joyStatusLabel.setStyleSheet("color: white; font-weight: bold;")
         except Exception:
             pass
 
@@ -355,10 +364,10 @@ class Main(QtWidgets.QWidget):
                     except Exception:
                         tx_name = None
                     if tx_name:
-                        self.txStatusLabel.setText(f"TX: {tx_name}")
+                        self.txStatusLabel.setText(f"Module: {tx_name}")
                     else:
-                        self.txStatusLabel.setText("TX: Connected")
-                    self.txStatusLabel.setStyleSheet("color: green; font-weight: bold;")
+                        self.txStatusLabel.setText("Module: Connected")
+                    self.txStatusLabel.setStyleSheet("color: white; font-weight: bold;")
             except Exception as e:
                 self.onDebug(f"onSync heartbeat update error: {e}")
         except Exception as e:
@@ -426,7 +435,7 @@ class Main(QtWidgets.QWidget):
             if self._tx_connected and (time.time() - self._last_tx_heartbeat) > 2.0:
                 self._tx_connected = False
                 try:
-                    self.txStatusLabel.setText("TX: Disconnected")
+                    self.txStatusLabel.setText("Module: Disconnected")
                     self.txStatusLabel.setStyleSheet("color: red; font-weight: bold;")
                 except Exception:
                     pass
@@ -696,7 +705,7 @@ class Main(QtWidgets.QWidget):
                 # Update the TX name in the UI; heartbeat will change the color
                 # Only update label for TX modules, not receivers
                 try:
-                    self.txStatusLabel.setText(f"TX: {name}")
+                    self.txStatusLabel.setText(f"Module: {name}")
                 except Exception:
                     pass
             self.onDebug(f"Device discovered: {name} addr=0x{src:02X}")
