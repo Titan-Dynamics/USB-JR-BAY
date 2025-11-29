@@ -1552,43 +1552,67 @@ if __name__ == "__main__":
     }}
 
     QScrollBar:vertical {{
-        background-color: #1a1a1a;
-        width: 12px;
+        background-color: transparent;
+        width: 10px;
         border: none;
+        margin: 0px;
     }}
 
     QScrollBar::handle:vertical {{
-        background-color: #555555;
-        border-radius: 6px;
-        min-height: 20px;
+        background-color: #4a4a4a;
+        border-radius: 5px;
+        min-height: 30px;
+        margin: 2px 2px 2px 2px;
     }}
 
     QScrollBar::handle:vertical:hover {{
-        background-color: #666666;
+        background-color: #5a5a5a;
+    }}
+
+    QScrollBar::handle:vertical:pressed {{
+        background-color: #6a6a6a;
     }}
 
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
         height: 0px;
+        border: none;
+        background: none;
+    }}
+
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+        background: none;
     }}
 
     QScrollBar:horizontal {{
-        background-color: #1a1a1a;
-        height: 12px;
+        background-color: transparent;
+        height: 10px;
         border: none;
+        margin: 0px;
     }}
 
     QScrollBar::handle:horizontal {{
-        background-color: #555555;
-        border-radius: 6px;
-        min-width: 20px;
+        background-color: #4a4a4a;
+        border-radius: 5px;
+        min-width: 30px;
+        margin: 2px 2px 2px 2px;
     }}
 
     QScrollBar::handle:horizontal:hover {{
-        background-color: #666666;
+        background-color: #5a5a5a;
+    }}
+
+    QScrollBar::handle:horizontal:pressed {{
+        background-color: #6a6a6a;
     }}
 
     QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
         width: 0px;
+        border: none;
+        background: none;
+    }}
+
+    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+        background: none;
     }}
 
     QFrame[frameShape="4"], QFrame[frameShape="5"] {{
