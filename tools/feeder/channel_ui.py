@@ -98,9 +98,9 @@ class ChannelRow(QtWidgets.QWidget):
         self.idxBox.setValue(cfg.get("idx", 0))
         self.idxBox.setMaximumWidth(60)
 
-        self.inv = QtWidgets.QCheckBox("inv")
+        self.inv = QtWidgets.QCheckBox("Reverse")
         self.inv.setChecked(cfg.get("inv", False))
-        self.inv.setMaximumWidth(60)
+        self.inv.setMaximumWidth(80)
 
         self.toggleBox = QtWidgets.QCheckBox("Toggle")
         self.toggleBox.setChecked(cfg.get("toggle", False))
@@ -153,41 +153,38 @@ class ChannelRow(QtWidgets.QWidget):
         self.maxBox.valueChanged.connect(update_bar_range)
         update_bar_range()
 
-        # Top row: full-width with scaling elements
+        # Top row: CHX, Name, Axis, IDX, Map, %, 1500
         topLayout = QtWidgets.QHBoxLayout()
         topLayout.addWidget(self.lbl)
         topLayout.addWidget(self.nameBox)
+        topLayout.addWidget(self.src)
+        self.idxLbl = QtWidgets.QLabel("idx")
+        self.idxLbl.setMaximumWidth(30)
+        topLayout.addWidget(self.idxLbl)
+        topLayout.addWidget(self.idxBox)
+        topLayout.addWidget(self.mapBtn)
         topLayout.addWidget(self.bar, 1)  # progress bar gets stretch
         topLayout.addWidget(self.val)
         layout.addLayout(topLayout, 0, 0, 1, 15)
 
-        # Bottom row: fixed-width controls
-        srcLbl = QtWidgets.QLabel("src")
-        srcLbl.setMaximumWidth(30)
-        layout.addWidget(srcLbl, 1, 0)
-        layout.addWidget(self.src, 1, 1)
-        idxLbl = QtWidgets.QLabel("idx")
-        idxLbl.setMaximumWidth(30)
-        layout.addWidget(idxLbl, 1, 2)
-        layout.addWidget(self.idxBox, 1, 3)
-        layout.addWidget(self.inv, 1, 4)
-        minLbl = QtWidgets.QLabel("min")
+        # Bottom row: Min, Mid, Max, Toggle, Toggle Group, Rotary, Rotary Stops, Reverse
+        minLbl = QtWidgets.QLabel("Min")
         minLbl.setMaximumWidth(30)
-        layout.addWidget(minLbl, 1, 5)
-        layout.addWidget(self.minBox, 1, 6)
-        midLbl = QtWidgets.QLabel("mid")
+        layout.addWidget(minLbl, 1, 0)
+        layout.addWidget(self.minBox, 1, 1)
+        midLbl = QtWidgets.QLabel("Mid")
         midLbl.setMaximumWidth(30)
-        layout.addWidget(midLbl, 1, 7)
-        layout.addWidget(self.midBox, 1, 8)
-        maxLbl = QtWidgets.QLabel("max")
+        layout.addWidget(midLbl, 1, 2)
+        layout.addWidget(self.midBox, 1, 3)
+        maxLbl = QtWidgets.QLabel("Max")
         maxLbl.setMaximumWidth(30)
-        layout.addWidget(maxLbl, 1, 9)
-        layout.addWidget(self.maxBox, 1, 10)
-        layout.addWidget(self.mapBtn, 1, 11)
-        layout.addWidget(self.toggleBox, 1, 12)
-        layout.addWidget(self.toggleGroupBox, 1, 13)
-        layout.addWidget(self.rotaryBox, 1, 14)
-        layout.addWidget(self.rotaryStopsBox, 1, 15)
+        layout.addWidget(maxLbl, 1, 4)
+        layout.addWidget(self.maxBox, 1, 5)
+        layout.addWidget(self.toggleBox, 1, 6)
+        layout.addWidget(self.toggleGroupBox, 1, 7)
+        layout.addWidget(self.rotaryBox, 1, 8)
+        layout.addWidget(self.rotaryStopsBox, 1, 9)
+        layout.addWidget(self.inv, 1, 10)
 
         # Connect signals
         self.nameBox.textChanged.connect(self.changed.emit)
@@ -247,7 +244,7 @@ class ChannelRow(QtWidgets.QWidget):
         for widget in widgets_to_control:
             widget.setEnabled(is_mapped)
             if not is_mapped:
-                widget.setStyleSheet("color: gray;")
+                widget.setStyleSheet("color: #666666;")
             else:
                 widget.setStyleSheet("")
 
@@ -255,8 +252,8 @@ class ChannelRow(QtWidgets.QWidget):
         self.toggleBox.setEnabled(is_mapped and not is_axis)
         self.rotaryBox.setEnabled(is_mapped and not is_axis)
         if is_axis:
-            self.toggleBox.setStyleSheet("color: gray;")
-            self.rotaryBox.setStyleSheet("color: gray;")
+            self.toggleBox.setStyleSheet("color: #666666;")
+            self.rotaryBox.setStyleSheet("color: #666666;")
         else:
             self.toggleBox.setStyleSheet("")
             self.rotaryBox.setStyleSheet("")
@@ -265,7 +262,7 @@ class ChannelRow(QtWidgets.QWidget):
         is_rotary = self.rotaryBox.isChecked()
         self.inv.setEnabled(is_mapped and not is_rotary)
         if is_rotary:
-            self.inv.setStyleSheet("color: gray;")
+            self.inv.setStyleSheet("color: #666666;")
         else:
             self.inv.setStyleSheet("")
 

@@ -9,9 +9,12 @@ import re
 import threading
 import csv
 import os
+import tempfile
+import shutil
 from datetime import datetime
 from PyQt5 import QtWidgets, QtCore
-from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QIcon, QPalette, QColor, QPixmap, QPainter, QPolygon
+from PyQt5.QtCore import QPoint
 
 # Import from refactored modules
 from crsf_protocol import *
@@ -51,6 +54,9 @@ class Main(QtWidgets.QWidget):
         if icon_path and os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
         self.resize(1500, 950)
+
+        # Set dark title bar on Windows 10/11
+        self._set_dark_title_bar()
         self.cfg = DEFAULT_CFG.copy()
         self._load_cfg()
 
@@ -186,7 +192,7 @@ class Main(QtWidgets.QWidget):
 
         # Initially set link stats labels to grey
         for lab in self.telLabels.values():
-            lab.setStyleSheet("color: grey;")
+            lab.setStyleSheet("color: #888888;")
 
         # Log (fixed height)
         self.log = QtWidgets.QPlainTextEdit(); self.log.setReadOnly(True)
@@ -233,7 +239,7 @@ class Main(QtWidgets.QWidget):
 
         # Version info at the bottom
         version_label = QtWidgets.QLabel(f"Version: {VERSION} | Git SHA: {GIT_SHA}")
-        version_label.setStyleSheet("color: grey; font-size: 9pt;")
+        version_label.setStyleSheet("color: #888888; font-size: 9pt;")
         version_label.setAlignment(QtCore.Qt.AlignRight)
         layout.addWidget(version_label)
 
@@ -438,7 +444,7 @@ class Main(QtWidgets.QWidget):
         # Link stats timeout check
         now = time.time()
         timeout = now - self.serThread.last_link_stats_time > 5.0
-        color = "grey" if timeout else "black"
+        color = "#888888" if timeout else "#e0e0e0"
         for lab in self.telLabels.values():
             lab.setStyleSheet(f"color: {color};")
 
@@ -495,6 +501,30 @@ class Main(QtWidgets.QWidget):
             base_path = os.path.dirname(os.path.abspath(__file__))
 
         return os.path.join(base_path, 'icon.ico')
+
+    def _set_dark_title_bar(self):
+        """Set dark title bar on Windows 10/11"""
+        try:
+            import platform
+            if platform.system() == "Windows":
+                # For Windows 10/11, use DWM API to enable dark title bar
+                try:
+                    from ctypes import windll, c_int, byref, sizeof
+                    HWND = int(self.winId())
+                    # DWMWA_USE_IMMERSIVE_DARK_MODE = 20 (Windows 11) or 19 (Windows 10 older builds)
+                    DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+                    value = c_int(1)  # 1 = dark mode, 0 = light mode
+                    windll.dwmapi.DwmSetWindowAttribute(HWND, DWMWA_USE_IMMERSIVE_DARK_MODE, byref(value), sizeof(value))
+                except Exception:
+                    # Try the older Windows 10 attribute if the newer one fails
+                    try:
+                        DWMWA_USE_IMMERSIVE_DARK_MODE = 19
+                        value = c_int(1)
+                        windll.dwmapi.DwmSetWindowAttribute(HWND, DWMWA_USE_IMMERSIVE_DARK_MODE, byref(value), sizeof(value))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     def _load_cfg(self):
         try:
@@ -1204,8 +1234,385 @@ class Main(QtWidgets.QWidget):
 
 # -------------------------------------------------------------------
 
+def create_arrow_icon(direction='down', color='#e0e0e0', size=16):
+    """Create an arrow icon for combo boxes and spin boxes.
+
+    Args:
+        direction: 'up' or 'down'
+        color: Arrow color
+        size: Icon size in pixels
+
+    Returns:
+        QIcon with the arrow
+    """
+    pixmap = QPixmap(size, size)
+    pixmap.fill(QtCore.Qt.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    # Create arrow polygon
+    if direction == 'down':
+        points = [
+            QPoint(size // 4, size // 3),
+            QPoint(3 * size // 4, size // 3),
+            QPoint(size // 2, 2 * size // 3)
+        ]
+    else:  # up
+        points = [
+            QPoint(size // 4, 2 * size // 3),
+            QPoint(3 * size // 4, 2 * size // 3),
+            QPoint(size // 2, size // 3)
+        ]
+
+    polygon = QPolygon(points)
+    painter.setBrush(QColor(color))
+    painter.setPen(QtCore.Qt.NoPen)
+    painter.drawPolygon(polygon)
+    painter.end()
+
+    return QIcon(pixmap)
+
+
+def create_checkmark_icon(color='#ffffff', size=16):
+    """Create a checkmark icon for checkboxes.
+
+    Args:
+        color: Checkmark color
+        size: Icon size in pixels
+
+    Returns:
+        QIcon with the checkmark
+    """
+    pixmap = QPixmap(size, size)
+    pixmap.fill(QtCore.Qt.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    pen = painter.pen()
+    pen.setColor(QColor(color))
+    pen.setWidth(2)
+    painter.setPen(pen)
+
+    # Draw checkmark
+    points = [
+        QPoint(size // 4, size // 2),
+        QPoint(size // 2 - 1, 3 * size // 4),
+        QPoint(3 * size // 4, size // 4)
+    ]
+
+    painter.drawPolyline(QPolygon(points))
+    painter.end()
+
+    return QIcon(pixmap)
+
+
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
+
+    # Create temporary directory for icons
+    temp_dir = tempfile.mkdtemp()
+
+    # Create and save arrow icons
+    down_arrow = create_arrow_icon('down', '#e0e0e0', 12)
+    up_arrow = create_arrow_icon('up', '#e0e0e0', 12)
+    checkmark = create_checkmark_icon('#ffffff', 14)
+
+    down_arrow_path = os.path.join(temp_dir, 'down_arrow.png').replace('\\', '/')
+    up_arrow_path = os.path.join(temp_dir, 'up_arrow.png').replace('\\', '/')
+    checkmark_path = os.path.join(temp_dir, 'checkmark.png').replace('\\', '/')
+
+    down_arrow.pixmap(12, 12).save(down_arrow_path)
+    up_arrow.pixmap(12, 12).save(up_arrow_path)
+    checkmark.pixmap(14, 14).save(checkmark_path)
+
+    # Apply dark theme
+    dark_stylesheet = """
+    QWidget {{
+        background-color: #2b2b2b;
+        color: #e0e0e0;
+        font-family: Segoe UI, Arial, sans-serif;
+    }}
+
+    QMainWindow, QDialog {{
+        background-color: #2b2b2b;
+    }}
+
+    QLabel {{
+        color: #e0e0e0;
+        background-color: transparent;
+    }}
+
+    QPushButton {{
+        background-color: #3c3c3c;
+        color: #e0e0e0;
+        border: 1px solid #555555;
+        border-radius: 4px;
+        padding: 5px 10px;
+        min-height: 20px;
+    }}
+
+    QPushButton:hover {{
+        background-color: #4a4a4a;
+        border: 1px solid #666666;
+    }}
+
+    QPushButton:pressed {{
+        background-color: #2a2a2a;
+    }}
+
+    QPushButton:disabled {{
+        background-color: #2b2b2b;
+        color: #666666;
+        border: 1px solid #3c3c3c;
+    }}
+
+    QLineEdit, QSpinBox, QDoubleSpinBox {{
+        background-color: #3c3c3c;
+        color: #e0e0e0;
+        border: 1px solid #555555;
+        border-radius: 3px;
+        padding: 3px;
+        selection-background-color: #0d47a1;
+    }}
+
+    QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
+        border: 1px solid #1e88e5;
+    }}
+
+    QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {{
+        background-color: #2b2b2b;
+        color: #666666;
+    }}
+
+    QComboBox {{
+        background-color: #3c3c3c;
+        color: #e0e0e0;
+        border: 1px solid #555555;
+        border-radius: 3px;
+        padding: 3px 5px;
+        min-height: 20px;
+    }}
+
+    QComboBox:hover {{
+        border: 1px solid #666666;
+    }}
+
+    QComboBox:disabled {{
+        background-color: #2b2b2b;
+        color: #666666;
+    }}
+
+    QComboBox::drop-down {{
+        subcontrol-origin: padding;
+        subcontrol-position: top right;
+        width: 20px;
+        border-left: 1px solid #555555;
+        background-color: #3c3c3c;
+        border-top-right-radius: 3px;
+        border-bottom-right-radius: 3px;
+    }}
+
+    QComboBox::down-arrow {{
+        image: url({down_arrow_path});
+        width: 12px;
+        height: 12px;
+    }}
+
+    QComboBox QAbstractItemView {{
+        background-color: #3c3c3c;
+        color: #e0e0e0;
+        selection-background-color: #0d47a1;
+        selection-color: #ffffff;
+        border: 1px solid #555555;
+    }}
+
+    QCheckBox {{
+        color: #e0e0e0;
+        spacing: 5px;
+    }}
+
+    QCheckBox::indicator {{
+        width: 18px;
+        height: 18px;
+        border: 2px solid #555555;
+        border-radius: 3px;
+        background-color: #3c3c3c;
+    }}
+
+    QCheckBox::indicator:hover {{
+        border: 2px solid #666666;
+    }}
+
+    QCheckBox::indicator:checked {{
+        background-color: #1e88e5;
+        border: 2px solid #1e88e5;
+        image: url({checkmark_path});
+    }}
+
+    QCheckBox::indicator:disabled {{
+        background-color: #2b2b2b;
+        border: 2px solid #3c3c3c;
+    }}
+
+    QProgressBar {{
+        background-color: #3c3c3c;
+        border: 1px solid #555555;
+        border-radius: 3px;
+        text-align: center;
+        color: #e0e0e0;
+    }}
+
+    QProgressBar::chunk {{
+        background-color: #1e88e5;
+        border-radius: 2px;
+    }}
+
+    QGroupBox {{
+        color: #e0e0e0;
+        border: 1px solid #555555;
+        border-radius: 5px;
+        margin-top: 10px;
+        padding-top: 10px;
+        font-weight: bold;
+    }}
+
+    QGroupBox::title {{
+        subcontrol-origin: margin;
+        subcontrol-position: top left;
+        left: 10px;
+        padding: 0 5px;
+        background-color: #2b2b2b;
+    }}
+
+    QTabWidget::pane {{
+        border: 1px solid #555555;
+        background-color: #2b2b2b;
+        border-radius: 3px;
+    }}
+
+    QTabBar::tab {{
+        background-color: #3c3c3c;
+        color: #e0e0e0;
+        border: 1px solid #555555;
+        border-bottom: none;
+        padding: 8px 20px;
+        margin-right: 2px;
+        border-top-left-radius: 4px;
+        border-top-right-radius: 4px;
+    }}
+
+    QTabBar::tab:selected {{
+        background-color: #2b2b2b;
+        border-bottom: 2px solid #1e88e5;
+    }}
+
+    QTabBar::tab:hover:!selected {{
+        background-color: #4a4a4a;
+    }}
+
+    QPlainTextEdit, QTextEdit {{
+        background-color: #1e1e1e;
+        color: #e0e0e0;
+        border: 1px solid #555555;
+        border-radius: 3px;
+        selection-background-color: #0d47a1;
+    }}
+
+    QScrollArea {{
+        background-color: #2b2b2b;
+        border: none;
+    }}
+
+    QScrollBar:vertical {{
+        background-color: #1a1a1a;
+        width: 12px;
+        border: none;
+    }}
+
+    QScrollBar::handle:vertical {{
+        background-color: #555555;
+        border-radius: 6px;
+        min-height: 20px;
+    }}
+
+    QScrollBar::handle:vertical:hover {{
+        background-color: #666666;
+    }}
+
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+        height: 0px;
+    }}
+
+    QScrollBar:horizontal {{
+        background-color: #1a1a1a;
+        height: 12px;
+        border: none;
+    }}
+
+    QScrollBar::handle:horizontal {{
+        background-color: #555555;
+        border-radius: 6px;
+        min-width: 20px;
+    }}
+
+    QScrollBar::handle:horizontal:hover {{
+        background-color: #666666;
+    }}
+
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+        width: 0px;
+    }}
+
+    QFrame[frameShape="4"], QFrame[frameShape="5"] {{
+        color: #555555;
+    }}
+
+    QSpinBox::up-button, QDoubleSpinBox::up-button {{
+        background-color: #3c3c3c;
+        border-left: 1px solid #555555;
+        width: 16px;
+    }}
+
+    QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover {{
+        background-color: #4a4a4a;
+    }}
+
+    QSpinBox::down-button, QDoubleSpinBox::down-button {{
+        background-color: #3c3c3c;
+        border-left: 1px solid #555555;
+        width: 16px;
+    }}
+
+    QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+        background-color: #4a4a4a;
+    }}
+
+    QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
+        image: url({up_arrow_path});
+        width: 12px;
+        height: 12px;
+    }}
+
+    QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{
+        image: url({down_arrow_path});
+        width: 12px;
+        height: 12px;
+    }}
+    """.format(down_arrow_path=down_arrow_path, up_arrow_path=up_arrow_path, checkmark_path=checkmark_path)
+
+    app.setStyleSheet(dark_stylesheet)
+
     w = Main()
     w.show()
-    sys.exit(app.exec_())
+
+    exit_code = app.exec_()
+
+    # Clean up temporary files
+    try:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+    sys.exit(exit_code)
