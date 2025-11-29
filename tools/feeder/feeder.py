@@ -13,8 +13,8 @@ import tempfile
 import shutil
 from datetime import datetime
 from PyQt5 import QtWidgets, QtCore
-from PyQt5.QtGui import QIcon, QPalette, QColor, QPixmap, QPainter, QPolygon
-from PyQt5.QtCore import QPoint
+from PyQt5.QtGui import QIcon, QPalette, QColor, QPixmap, QPainter, QPolygon, QPen, QBrush
+from PyQt5.QtCore import QPoint, Qt
 
 # Import from refactored modules
 from crsf_protocol import *
@@ -45,6 +45,61 @@ TELEMETRY_UNIT_MAP = {
 SEND_HZ = 60
 
 
+class JoystickVisualizer(QtWidgets.QWidget):
+    """Visual joystick position indicator"""
+    def __init__(self, h_label="", v_label=""):
+        super().__init__()
+        self.h_label = h_label
+        self.v_label = v_label
+        self.h_value = 1500  # Center position
+        self.v_value = 1500  # Center position
+        self.setMinimumSize(150, 150)
+        self.setMaximumSize(200, 200)
+
+    def set_values(self, h_val, v_val):
+        """Update joystick position (1000-2000 range)"""
+        self.h_value = h_val
+        self.v_value = v_val
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        # Get widget dimensions
+        width = self.width()
+        height = self.height()
+        size = min(width, height) - 20
+        offset_x = (width - size) // 2
+        offset_y = (height - size) // 2
+
+        # Draw outer square (dead zone indicator)
+        painter.setPen(QPen(QColor("#555555"), 2))
+        painter.setBrush(QBrush(QColor("#2b2b2b")))
+        painter.drawRect(offset_x, offset_y, size, size)
+
+        # Draw center crosshair
+        painter.setPen(QPen(QColor("#666666"), 1))
+        center_x = offset_x + size // 2
+        center_y = offset_y + size // 2
+        painter.drawLine(center_x - 20, center_y, center_x + 20, center_y)
+        painter.drawLine(center_x, center_y - 20, center_x, center_y + 20)
+
+        # Calculate stick position (1000-2000 maps to 0-size)
+        # Invert vertical axis (lower value = higher on screen)
+        stick_x = offset_x + int((self.h_value - 1000) / 1000.0 * size)
+        stick_y = offset_y + int((2000 - self.v_value) / 1000.0 * size)
+
+        # Clamp to bounds
+        stick_x = max(offset_x, min(offset_x + size, stick_x))
+        stick_y = max(offset_y, min(offset_y + size, stick_y))
+
+        # Draw stick position circle
+        painter.setPen(QPen(QColor("#1e88e5"), 2))
+        painter.setBrush(QBrush(QColor("#1e88e5")))
+        painter.drawEllipse(stick_x - 8, stick_y - 8, 16, 16)
+
+
 class Main(QtWidgets.QWidget):
     def __init__(self):
         super().__init__()
@@ -53,7 +108,7 @@ class Main(QtWidgets.QWidget):
         icon_path = self._get_icon_path()
         if icon_path and os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
-        self.resize(1500, 950)
+        self.resize(1150, 900)
 
         # Set dark title bar on Windows 10/11
         self._set_dark_title_bar()
@@ -145,9 +200,13 @@ class Main(QtWidgets.QWidget):
         self.joy.status.connect(self.onDebug)
         self.joy.status.connect(self.onJoyStatus)
 
-        # Channels (scrollable, 2-column layout: 8 on left, 8 on right)
+        # Main content: channels on left, visualizers on right
+        content_layout = QtWidgets.QHBoxLayout()
+
+        # Left side: All 16 channels in single column (scrollable)
         self.rows = []
-        grid = QtWidgets.QGridLayout()
+        channels_layout = QtWidgets.QVBoxLayout()
+        channels_layout.setContentsMargins(0, 5, 5, 5)  # Reduce left padding
         for i in range(CHANNELS):
             row = ChannelRow(i, self.cfg["channels"][i] if i < len(self.cfg["channels"]) else DEFAULT_CFG["channels"][0])
             row.changed.connect(self.save_cfg)
@@ -160,25 +219,57 @@ class Main(QtWidgets.QWidget):
             except Exception:
                 pass
             self.rows.append(row)
-            # First 8 channels in column 0, next 8 in column 2 (with divider in column 1)
-            col = 0 if i < CHANNELS // 2 else 2
-            row_idx = i if i < CHANNELS // 2 else i - CHANNELS // 2
-            grid.addWidget(row, row_idx, col)
-
-        # Add vertical divider in column 1 (single frame spanning all rows)
-        divider = QtWidgets.QFrame()
-        divider.setFrameShape(QtWidgets.QFrame.VLine)
-        divider.setFrameShadow(QtWidgets.QFrame.Sunken)
-        divider.setLineWidth(2)
-        grid.addWidget(divider, 0, 1, CHANNELS // 2, 1)
+            channels_layout.addWidget(row)
 
         ch_container = QtWidgets.QWidget()
-        ch_container.setLayout(grid)
+        ch_container.setLayout(channels_layout)
 
         ch_scroll = QtWidgets.QScrollArea()
         ch_scroll.setWidgetResizable(True)
         ch_scroll.setWidget(ch_container)
         ch_scroll.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
+        content_layout.addWidget(ch_scroll, 2)  # Give channels more space
+
+        # Right side: Joystick visualizers and channel indicators
+        right_panel = QtWidgets.QVBoxLayout()
+
+        # Joystick visualizers
+        viz_layout = QtWidgets.QHBoxLayout()
+        self.viz1 = JoystickVisualizer("CH4 (Rudder)", "CH3 (Throttle)")
+        self.viz2 = JoystickVisualizer("CH1 (Aileron)", "CH2 (Elevator)")
+        viz_layout.addWidget(self.viz1)
+        viz_layout.addWidget(self.viz2)
+        right_panel.addLayout(viz_layout)
+
+        # Progress bars for channels 5-16
+        bars_widget = QtWidgets.QWidget()
+        bars_layout = QtWidgets.QVBoxLayout(bars_widget)
+        bars_layout.setSpacing(2)
+        self.channel_bars = []
+        for i in range(4, CHANNELS):
+            bar_layout = QtWidgets.QHBoxLayout()
+            label = QtWidgets.QLabel(f"{i+1}")
+            label.setMinimumWidth(40)
+            bar = QtWidgets.QProgressBar()
+            bar.setRange(1000, 2000)
+            bar.setValue(1500)
+            bar.setTextVisible(True)
+            bar.setMaximumHeight(20)
+            bar_layout.addWidget(label)
+            bar_layout.addWidget(bar)
+            bars_layout.addLayout(bar_layout)
+            self.channel_bars.append(bar)
+
+        bars_scroll = QtWidgets.QScrollArea()
+        bars_scroll.setWidgetResizable(True)
+        bars_scroll.setWidget(bars_widget)
+        bars_scroll.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
+        right_panel.addWidget(bars_scroll)
+
+        right_container = QtWidgets.QWidget()
+        right_container.setLayout(right_panel)
+        right_container.setMaximumWidth(450)
+        content_layout.addWidget(right_container, 1)
 
         # Telemetry
         tel = QtWidgets.QHBoxLayout()
@@ -206,8 +297,8 @@ class Main(QtWidgets.QWidget):
 
         # Channels tab
         channels_tab = QtWidgets.QWidget()
-        channels_layout = QtWidgets.QVBoxLayout(channels_tab)
-        channels_layout.addWidget(ch_scroll)
+        channels_tab_layout = QtWidgets.QVBoxLayout(channels_tab)
+        channels_tab_layout.addLayout(content_layout)
         self.tabs.addTab(channels_tab, "Channels")
 
         # Configuration tab
@@ -422,6 +513,22 @@ class Main(QtWidgets.QWidget):
 
         # Enforce toggle groups: only one toggle per group can be on
         ch = self._enforce_toggle_groups(ch)
+
+        # Update joystick visualizers (CH1-4)
+        try:
+            if len(ch) >= 4:
+                self.viz1.set_values(ch[3], ch[2])  # CH4 horizontal, CH3 vertical
+                self.viz2.set_values(ch[0], ch[1])  # CH1 horizontal, CH2 vertical
+        except Exception:
+            pass
+
+        # Update progress bars for channels 5-16
+        try:
+            for i, bar in enumerate(self.channel_bars):
+                if i + 4 < len(ch):
+                    bar.setValue(ch[i + 4])
+        except Exception:
+            pass
 
         # Update the shared channel buffer (decoupled); avoid transmitting when joystick disconnected
         if joystick_connected:
@@ -1559,43 +1666,67 @@ if __name__ == "__main__":
     }}
 
     QScrollBar:vertical {{
-        background-color: #1a1a1a;
-        width: 12px;
+        background-color: transparent;
+        width: 10px;
         border: none;
+        margin: 0px;
     }}
 
     QScrollBar::handle:vertical {{
-        background-color: #555555;
-        border-radius: 6px;
-        min-height: 20px;
+        background-color: #4a4a4a;
+        border-radius: 5px;
+        min-height: 30px;
+        margin: 2px 2px 2px 2px;
     }}
 
     QScrollBar::handle:vertical:hover {{
-        background-color: #666666;
+        background-color: #5a5a5a;
+    }}
+
+    QScrollBar::handle:vertical:pressed {{
+        background-color: #6a6a6a;
     }}
 
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
         height: 0px;
+        border: none;
+        background: none;
+    }}
+
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
+        background: none;
     }}
 
     QScrollBar:horizontal {{
-        background-color: #1a1a1a;
-        height: 12px;
+        background-color: transparent;
+        height: 10px;
         border: none;
+        margin: 0px;
     }}
 
     QScrollBar::handle:horizontal {{
-        background-color: #555555;
-        border-radius: 6px;
-        min-width: 20px;
+        background-color: #4a4a4a;
+        border-radius: 5px;
+        min-width: 30px;
+        margin: 2px 2px 2px 2px;
     }}
 
     QScrollBar::handle:horizontal:hover {{
-        background-color: #666666;
+        background-color: #5a5a5a;
+    }}
+
+    QScrollBar::handle:horizontal:pressed {{
+        background-color: #6a6a6a;
     }}
 
     QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
         width: 0px;
+        border: none;
+        background: none;
+    }}
+
+    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{
+        background: none;
     }}
 
     QFrame[frameShape="4"], QFrame[frameShape="5"] {{
