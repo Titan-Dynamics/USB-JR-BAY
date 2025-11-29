@@ -1,4 +1,4 @@
-# PlatformIO
+# PlatformIO (C++ build system)
 .pio/
 .vscode/
 .clangd/
@@ -6,6 +6,12 @@
 cmake-build*/
 .DS_Store
 
+# Python (tools/feeder has its own .gitignore with more detail)
+__pycache__/
+*.py[cod]
+*.pyc
+
+# IDE
 /tools/feeder/.idea
 tools/feeder/.idea/workspace.xml
 /tools/feeder/build
