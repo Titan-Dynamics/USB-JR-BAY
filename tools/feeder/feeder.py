@@ -192,7 +192,7 @@ class Main(QtWidgets.QWidget):
             lab.setAlignment(QtCore.Qt.AlignCenter | QtCore.Qt.AlignVCenter)
             f = lab.font(); f.setPointSize(14); lab.setFont(f)
             v = QtWidgets.QVBoxLayout(box)
-            v.setContentsMargins(5, 0, 0, 10)
+            v.setContentsMargins(0, 0, 0, 10)
             v.addWidget(lab, alignment=QtCore.Qt.AlignCenter)
             tel.addWidget(box)
             self.telLabels[key] = lab
