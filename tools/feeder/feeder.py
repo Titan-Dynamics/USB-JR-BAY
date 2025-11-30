@@ -194,6 +194,7 @@ class Main(QtWidgets.QWidget):
         self.rows = []
         channels_layout = QtWidgets.QVBoxLayout()
         channels_layout.setContentsMargins(0, 5, 5, 5)  # Reduce left padding
+        channels_layout.setSpacing(5)  # Space between bordered rows
         for i in range(CHANNELS):
             row = ChannelRow(i, self.cfg["channels"][i] if i < len(self.cfg["channels"]) else DEFAULT_CFG["channels"][0])
             row.changed.connect(self.save_cfg)
@@ -205,8 +206,15 @@ class Main(QtWidgets.QWidget):
                     row.debug.connect(self.onDebug)
             except Exception:
                 pass
+
+            # Wrap each row in a QGroupBox with channel label as title (like link stats)
+            channel_box = QtWidgets.QGroupBox(f"CH{i+1}")
+            box_layout = QtWidgets.QVBoxLayout(channel_box)
+            box_layout.setContentsMargins(5, 5, 10, 5)  # Extra right padding for scrollbar
+            box_layout.addWidget(row)
+
             self.rows.append(row)
-            channels_layout.addWidget(row)
+            channels_layout.addWidget(channel_box)
 
         ch_container = QtWidgets.QWidget()
         ch_container.setLayout(channels_layout)

@@ -167,7 +167,7 @@ class MultiButtonDialog(QtWidgets.QDialog):
             parent: Parent widget
         """
         super().__init__(parent)
-        self.setWindowTitle("Multi-Button Configuration")
+        self.setWindowTitle("Multi-Button Config")
         self.setModal(True)
         # Remove question mark icon from title bar
         self.setWindowFlags(self.windowFlags() & ~QtCore.Qt.WindowContextHelpButtonHint)
@@ -537,9 +537,6 @@ class ChannelRow(QtWidgets.QWidget):
         WIDGET_HEIGHT = 26
 
         # Widgets
-        self.lbl = QtWidgets.QLabel(name)
-        self.lbl.setFixedHeight(WIDGET_HEIGHT)
-
         self.nameBox = QtWidgets.QLineEdit()
         self.nameBox.setPlaceholderText("Name")
         self.nameBox.setFixedHeight(WIDGET_HEIGHT)
@@ -655,9 +652,8 @@ class ChannelRow(QtWidgets.QWidget):
         self.maxBox.valueChanged.connect(update_bar_range)
         update_bar_range()
 
-        # Top row: CHX, Name, Axis, IDX, Map/Configure, %, 1500
+        # Top row: Name, Axis, IDX, Map/Configure, %, 1500
         topLayout = QtWidgets.QHBoxLayout()
-        topLayout.addWidget(self.lbl)
         topLayout.addWidget(self.nameBox)
         topLayout.addWidget(self.src)
         self.idxLbl = QtWidgets.QLabel("id")
@@ -778,7 +774,6 @@ class ChannelRow(QtWidgets.QWidget):
 
         # List of widgets to enable/disable (Map button excluded - always enabled)
         widgets_to_control = [
-            self.lbl,
             self.nameBox,
             self.bar,
             self.val,
