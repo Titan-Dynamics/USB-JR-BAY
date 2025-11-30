@@ -132,7 +132,7 @@ class Main(QtWidgets.QWidget):
         icon_path = self._get_icon_path()
         if icon_path and os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
-        self.resize(1150, 900)
+        self.resize(1360, 900)
 
         # Set dark title bar on Windows 10/11
         self._set_dark_title_bar()
@@ -205,6 +205,8 @@ class Main(QtWidgets.QWidget):
 
         # Right side: Joystick visualizers and channel indicators
         right_panel = QtWidgets.QVBoxLayout()
+        right_panel.setContentsMargins(5, 0, 5, 0)  # Reduce vertical padding (left, top, right, bottom)
+        right_panel.setSpacing(2)  # Reduce spacing between visualizers and bars
 
         # Joystick visualizers (hidden when "Channels" mode)
         self.viz_layout = QtWidgets.QHBoxLayout()
@@ -233,24 +235,25 @@ class Main(QtWidgets.QWidget):
         # Progress bars for channels 5-16 (or 1-16 in Channels mode)
         bars_widget = QtWidgets.QWidget()
         bars_layout = QtWidgets.QVBoxLayout(bars_widget)
-        bars_layout.setSpacing(2)
+        bars_layout.setSpacing(1)
+        bars_layout.setContentsMargins(0, 0, 0, 0)
         self.channel_bars = []
         self.all_channel_bars = []  # Store all bars including 1-4
         self.bar_widgets = []  # Store widget containers for visibility toggling
         for i in range(CHANNELS):
             bar_container = QtWidgets.QWidget()  # Container for each bar
             bar_layout = QtWidgets.QHBoxLayout(bar_container)
-            bar_layout.setSpacing(5)  # Reduce gap between label and bar
+            bar_layout.setSpacing(3)  # Reduce gap between label and bar
+            bar_layout.setContentsMargins(0, 0, 0, 0)
             label = QtWidgets.QLabel(f"{i+1}")
             label.setMinimumWidth(20)
             bar = QtWidgets.QProgressBar()
             bar.setRange(1000, 2000)
             bar.setValue(1500)
             bar.setTextVisible(True)
-            bar.setMaximumHeight(20)
+            bar.setMaximumHeight(18)
             bar_layout.addWidget(label)
             bar_layout.addWidget(bar)
-            bar_layout.setContentsMargins(0, 0, 0, 0)
             bars_layout.addWidget(bar_container)
             self.all_channel_bars.append(bar)
             self.bar_widgets.append(bar_container)
@@ -321,8 +324,10 @@ class Main(QtWidgets.QWidget):
         # Serial COM controls
         port_layout.addWidget(QtWidgets.QLabel("ESP32 COM Port:"))
 
+        WIDGET_HEIGHT = 26  # Match channel row widget height
         self.portCombo = NoWheelComboBox()
         self.portCombo.setMinimumWidth(80)
+        self.portCombo.setFixedHeight(WIDGET_HEIGHT)
         self._refresh_port_list()
         # Set current port by finding it in the stored data
         saved_port = self.cfg["serial_port"]
@@ -336,6 +341,7 @@ class Main(QtWidgets.QWidget):
         refresh_btn = QtWidgets.QPushButton("Refresh")
         refresh_btn.clicked.connect(self._refresh_port_list)
         refresh_btn.setMaximumWidth(80)
+        refresh_btn.setFixedHeight(WIDGET_HEIGHT)
         port_layout.addWidget(refresh_btn)
 
         # JR Bay status right after the port controls
@@ -353,6 +359,7 @@ class Main(QtWidgets.QWidget):
         # Display mode dropdown
         port_layout.addWidget(QtWidgets.QLabel("Display:"))
         self.display_mode = NoWheelComboBox()
+        self.display_mode.setFixedHeight(WIDGET_HEIGHT)
         self.display_mode.addItems(["Channels", "Mode 1 sticks + channels", "Mode 2 sticks + channels"])
         self.display_mode.currentTextChanged.connect(self._on_display_mode_changed)
         port_layout.addWidget(self.display_mode)

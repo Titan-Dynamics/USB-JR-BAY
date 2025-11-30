@@ -638,7 +638,7 @@ class ChannelRow(QtWidgets.QWidget):
         self.maxBox.setFixedHeight(WIDGET_HEIGHT)
 
         self.mapBtn = QtWidgets.QPushButton("Map")
-        self.mapBtn.setFixedWidth(40)
+        self.mapBtn.setFixedWidth(50)
         self.mapBtn.setFixedHeight(WIDGET_HEIGHT)
 
         self.multiButtonBtn = QtWidgets.QPushButton("Configure")
