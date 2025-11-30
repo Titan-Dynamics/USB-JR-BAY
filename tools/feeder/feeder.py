@@ -427,10 +427,10 @@ class Main(QtWidgets.QWidget):
 
         # Logging checkbox
         self.logging_enabled = QtWidgets.QCheckBox("Logging enabled")
-        self.logging_enabled.setChecked(self.cfg.get("logging_enabled", False))
         self.logging_enabled.setFixedHeight(WIDGET_HEIGHT)
         self.logging_enabled.toggled.connect(self._on_logging_toggled)
         port_layout.addWidget(self.logging_enabled)
+        self.logging_enabled.setChecked(self.cfg.get("logging_enabled", False))
 
         # Divider between logging and display mode
         display_divider = QtWidgets.QFrame()
