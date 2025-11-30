@@ -1526,7 +1526,7 @@ if __name__ == "__main__":
         color: #e0e0e0;
         border: 1px solid #555555;
         border-radius: 3px;
-        padding: 3px 5px;
+        padding: 1px 5px;
         min-height: 20px;
     }}
 
