@@ -40,9 +40,14 @@ TELEMETRY_UNIT_MAP = {
     'TLQ': '%',
     'RSNR': 'dB',
     'TSNR': 'dB',
+    'TPWR': 'mW',
 }
 
 SEND_HZ = 60
+
+def tpwr_to_mw(crsfpower):
+    return {1: "10", 2: "25", 3: "100", 4: "500", 5: "1000",
+            6: "2000", 7: "250", 8: "50"}.get(crsfpower, "Unknown")
 
 
 class NoWheelComboBox(QtWidgets.QComboBox):
@@ -310,9 +315,11 @@ class Main(QtWidgets.QWidget):
         for key in ["1RSS","2RSS","RSNR","TRSS","TSNR","LQ","TLQ","RFMD","TPWR"]:
             box = QtWidgets.QGroupBox(key)
             lab = QtWidgets.QLabel("--")
-            lab.setAlignment(QtCore.Qt.AlignCenter)
+            lab.setAlignment(QtCore.Qt.AlignCenter | QtCore.Qt.AlignVCenter)
             f = lab.font(); f.setPointSize(14); lab.setFont(f)
-            v = QtWidgets.QVBoxLayout(box); v.addWidget(lab)
+            v = QtWidgets.QVBoxLayout(box)
+            v.setContentsMargins(0, 0, 0, 10)
+            v.addWidget(lab, alignment=QtCore.Qt.AlignCenter)
             tel.addWidget(box)
             self.telLabels[key] = lab
 
@@ -525,16 +532,24 @@ class Main(QtWidgets.QWidget):
         for k, v in d.items():
             if k in self.telLabels:
                 try:
-                    unit = TELEMETRY_UNIT_MAP.get(k)
-                    if unit and v is not None:
-                        # display numeric values with units
-                        # Keep simple formatting — if it's int or float show without extra quirks
-                        if isinstance(v, float):
-                            text = f"{v:.1f} {unit}"
+                    # Special handling for TPWR - convert to mW value
+                    if k == 'TPWR' and v is not None:
+                        mw_value = tpwr_to_mw(v)
+                        unit = TELEMETRY_UNIT_MAP.get(k)
+                        if unit:
+                            text = f"{mw_value} {unit}"
                         else:
-                            text = f"{v} {unit}"
+                            text = mw_value
                     else:
-                        text = str(v)
+                        unit = TELEMETRY_UNIT_MAP.get(k)
+                        if unit and v is not None:
+                            # display numeric values with units
+                            if isinstance(v, float):
+                                text = f"{v:.1f} {unit}"
+                            else:
+                                text = f"{v} {unit}"
+                        else:
+                            text = str(v)
                 except Exception:
                     text = str(v)
                 self.telLabels[k].setText(text)
