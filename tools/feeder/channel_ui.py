@@ -185,8 +185,9 @@ class MultiButtonDialog(QtWidgets.QDialog):
                 background-color: #3c3c3c;
                 color: #e0e0e0;
                 border: 1px solid #555555;
-                padding: 4px 12px;
+                padding: 2px 8px;
                 border-radius: 3px;
+                font-size: 8pt;
             }}
             QPushButton:hover {{
                 background-color: #4a4a4a;
@@ -439,39 +440,50 @@ class ChannelRow(QtWidgets.QWidget):
         layout = QtWidgets.QGridLayout(self)
         name = f"CH{idx + 1}"
 
+        # Widget height constant
+        WIDGET_HEIGHT = 26
+
         # Widgets
         self.lbl = QtWidgets.QLabel(name)
         self.lbl.setMaximumWidth(50)
+        self.lbl.setFixedHeight(WIDGET_HEIGHT)
 
         self.nameBox = QtWidgets.QLineEdit()
         self.nameBox.setPlaceholderText("Name")
         self.nameBox.setMaximumWidth(100)
+        self.nameBox.setFixedHeight(WIDGET_HEIGHT)
         default_names = ["Ail", "Elev", "Thr", "Rudd", "Arm", "Mode"]
         default_name = default_names[idx] if idx < len(default_names) else ""
         self.nameBox.setText(cfg.get("name", default_name))
 
         self.bar = QtWidgets.QProgressBar()
         self.bar.setRange(0, 2000)
+        self.bar.setFixedHeight(WIDGET_HEIGHT)
 
         self.val = QtWidgets.QLabel("1500")
+        self.val.setFixedHeight(WIDGET_HEIGHT)
 
         self.src = QtWidgets.QComboBox()
         self.src.addItems(SRC_CHOICES)
         self.src.setMaximumWidth(80)
+        self.src.setFixedHeight(WIDGET_HEIGHT)
         self.src.setCurrentText(cfg.get("src", "none"))
 
         self.idxBox = QtWidgets.QSpinBox()
         self.idxBox.setRange(0, 63)
         self.idxBox.setValue(cfg.get("idx", 0))
         self.idxBox.setMaximumWidth(60)
+        self.idxBox.setFixedHeight(WIDGET_HEIGHT)
 
         self.inv = QtWidgets.QCheckBox("Reverse")
         self.inv.setChecked(cfg.get("inv", False))
         self.inv.setMaximumWidth(80)
+        self.inv.setFixedHeight(WIDGET_HEIGHT)
 
         self.toggleBox = QtWidgets.QCheckBox("Toggle")
         self.toggleBox.setChecked(cfg.get("toggle", False))
         self.toggleBox.setMaximumWidth(80)
+        self.toggleBox.setFixedHeight(WIDGET_HEIGHT)
 
         self.toggleGroupBox = QtWidgets.QComboBox()
         self.toggleGroupBox.addItem("None")  # Index 0 = None (stored as -1)
@@ -487,16 +499,19 @@ class ChannelRow(QtWidgets.QWidget):
             dropdown_index = max(1, min(8, saved_group + 1))
         self.toggleGroupBox.setCurrentIndex(dropdown_index)
         self.toggleGroupBox.setMaximumWidth(80)
+        self.toggleGroupBox.setFixedHeight(WIDGET_HEIGHT)
         self.toggleGroupBox.setEnabled(cfg.get("toggle", False))
 
         self.rotaryBox = QtWidgets.QCheckBox("Rotary")
         self.rotaryBox.setChecked(cfg.get("rotary", False))
         self.rotaryBox.setMaximumWidth(80)
+        self.rotaryBox.setFixedHeight(WIDGET_HEIGHT)
 
         self.rotaryStopsBox = QtWidgets.QSpinBox()
         self.rotaryStopsBox.setRange(3, 6)
         self.rotaryStopsBox.setValue(cfg.get("rotary_stops", 3))
         self.rotaryStopsBox.setMaximumWidth(60)
+        self.rotaryStopsBox.setFixedHeight(WIDGET_HEIGHT)
         self.rotaryStopsBox.setEnabled(cfg.get("rotary", False))
 
         self.minBox = QtWidgets.QSpinBox()
@@ -504,24 +519,29 @@ class ChannelRow(QtWidgets.QWidget):
         self.minBox.setValue(cfg.get("min", 1000))
         self.minBox.setAlignment(QtCore.Qt.AlignLeft)
         self.minBox.setMaximumWidth(70)
+        self.minBox.setFixedHeight(WIDGET_HEIGHT)
 
         self.midBox = QtWidgets.QSpinBox()
         self.midBox.setRange(0, 2000)
         self.midBox.setValue(cfg.get("center", 1500))
         self.midBox.setAlignment(QtCore.Qt.AlignLeft)
         self.midBox.setMaximumWidth(70)
+        self.midBox.setFixedHeight(WIDGET_HEIGHT)
 
         self.maxBox = QtWidgets.QSpinBox()
         self.maxBox.setRange(0, 2000)
         self.maxBox.setValue(cfg.get("max", 2000))
         self.maxBox.setAlignment(QtCore.Qt.AlignLeft)
         self.maxBox.setMaximumWidth(70)
+        self.maxBox.setFixedHeight(WIDGET_HEIGHT)
 
         self.mapBtn = QtWidgets.QPushButton("Map")
-        self.mapBtn.setMaximumWidth(70)
+        self.mapBtn.setFixedWidth(40)
+        self.mapBtn.setFixedHeight(WIDGET_HEIGHT)
 
         self.multiButtonBtn = QtWidgets.QPushButton("Configure")
-        self.multiButtonBtn.setMaximumWidth(70)
+        self.multiButtonBtn.setMinimumWidth(105)
+        self.multiButtonBtn.setFixedHeight(WIDGET_HEIGHT)
         self.multiButtonBtn.setVisible(False)
         self.multiButtonBtn.setEnabled(False)
 
@@ -540,6 +560,7 @@ class ChannelRow(QtWidgets.QWidget):
         topLayout.addWidget(self.src)
         self.idxLbl = QtWidgets.QLabel("id")
         self.idxLbl.setMaximumWidth(30)
+        self.idxLbl.setFixedHeight(WIDGET_HEIGHT)
         topLayout.addWidget(self.idxLbl)
         topLayout.addWidget(self.idxBox)
         topLayout.addWidget(self.mapBtn)
@@ -551,14 +572,17 @@ class ChannelRow(QtWidgets.QWidget):
         # Bottom row: Min, Mid, Max, Toggle, Toggle Group, Rotary, Rotary Stops, Reverse
         self.minLbl = QtWidgets.QLabel("Min")
         self.minLbl.setMaximumWidth(30)
+        self.minLbl.setFixedHeight(WIDGET_HEIGHT)
         layout.addWidget(self.minLbl, 1, 0)
         layout.addWidget(self.minBox, 1, 1)
         self.midLbl = QtWidgets.QLabel("Mid")
         self.midLbl.setMaximumWidth(30)
+        self.midLbl.setFixedHeight(WIDGET_HEIGHT)
         layout.addWidget(self.midLbl, 1, 2)
         layout.addWidget(self.midBox, 1, 3)
         self.maxLbl = QtWidgets.QLabel("Max")
         self.maxLbl.setMaximumWidth(30)
+        self.maxLbl.setFixedHeight(WIDGET_HEIGHT)
         layout.addWidget(self.maxLbl, 1, 4)
         layout.addWidget(self.maxBox, 1, 5)
         layout.addWidget(self.toggleBox, 1, 6)

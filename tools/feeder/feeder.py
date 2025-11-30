@@ -755,7 +755,7 @@ class Main(QtWidgets.QWidget):
         self.mapping_baseline = self.joy.read()
         self.mapping_started_at = time.time()
         try:
-            row.mapBtn.setText("Listening…")
+            row.mapBtn.setText("...")
             row.mapBtn.setEnabled(False)
         except Exception:
             pass
@@ -1483,8 +1483,9 @@ if __name__ == "__main__":
         color: #e0e0e0;
         border: 1px solid #555555;
         border-radius: 4px;
-        padding: 3px 10px;
+        padding: 2px 8px;
         min-height: 20px;
+        font-size: 8pt;
     }}
 
     QPushButton:hover {{
