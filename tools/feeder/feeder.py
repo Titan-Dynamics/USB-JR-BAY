@@ -59,13 +59,24 @@ class JoystickVisualizer(QtWidgets.QWidget):
         super().__init__()
         self.h_value = 1500  # Center position
         self.v_value = 1500  # Center position
+        self.h_mapped = False  # Whether horizontal channel is mapped
+        self.v_mapped = False  # Whether vertical channel is mapped
         self.setMinimumSize(150, 150)
         self.setMaximumSize(200, 200)
 
-    def set_values(self, h_val, v_val):
-        """Update joystick position (1000-2000 range)"""
+    def set_values(self, h_val, v_val, h_mapped=True, v_mapped=True):
+        """Update joystick position (1000-2000 range)
+
+        Args:
+            h_val: Horizontal value (1000-2000)
+            v_val: Vertical value (1000-2000)
+            h_mapped: Whether horizontal channel is mapped
+            v_mapped: Whether vertical channel is mapped
+        """
         self.h_value = h_val
         self.v_value = v_val
+        self.h_mapped = h_mapped
+        self.v_mapped = v_mapped
         self.update()
 
     def paintEvent(self, event):
@@ -92,19 +103,25 @@ class JoystickVisualizer(QtWidgets.QWidget):
         painter.drawLine(center_x - crosshair_extent, center_y, center_x + crosshair_extent, center_y)
         painter.drawLine(center_x, center_y - crosshair_extent, center_x, center_y + crosshair_extent)
 
-        # Calculate stick position (1000-2000 maps to 0-size)
-        # Invert vertical axis (lower value = higher on screen)
-        stick_x = offset_x + int((self.h_value - 1000) / 1000.0 * size)
-        stick_y = offset_y + int((2000 - self.v_value) / 1000.0 * size)
+        # Draw stick position indicator if at least one channel is mapped
+        if self.h_mapped or self.v_mapped:
+            # Calculate stick position (1000-2000 maps to 0-size)
+            # Invert vertical axis (lower value = higher on screen)
+            center_stick_x = offset_x + size // 2
+            center_stick_y = offset_y + size // 2
 
-        # Clamp to bounds
-        stick_x = max(offset_x, min(offset_x + size, stick_x))
-        stick_y = max(offset_y, min(offset_y + size, stick_y))
+            # Use mapped values, center for unmapped axes
+            stick_x = offset_x + int((self.h_value - 1000) / 1000.0 * size) if self.h_mapped else center_stick_x
+            stick_y = offset_y + int((2000 - self.v_value) / 1000.0 * size) if self.v_mapped else center_stick_y
 
-        # Draw stick position circle
-        painter.setPen(QPen(QColor("#1e88e5"), 2))
-        painter.setBrush(QBrush(QColor("#1e88e5")))
-        painter.drawEllipse(stick_x - 8, stick_y - 8, 16, 16)
+            # Clamp to bounds
+            stick_x = max(offset_x, min(offset_x + size, stick_x))
+            stick_y = max(offset_y, min(offset_y + size, stick_y))
+
+            # Draw circle for any mapped channel(s)
+            painter.setPen(QPen(QColor("#1e88e5"), 2))
+            painter.setBrush(QBrush(QColor("#1e88e5")))
+            painter.drawEllipse(stick_x - 8, stick_y - 8, 16, 16)
 
 
 class Main(QtWidgets.QWidget):
@@ -584,14 +601,17 @@ class Main(QtWidgets.QWidget):
         # Update joystick visualizers (CH1-4)
         try:
             if len(ch) >= 4:
+                # Check which channels are mapped (not "none") from saved config
+                ch_mapped = [self.cfg["channels"][i].get("src", "none") != "none" for i in range(4)]
+
                 if self.current_mode == "Mode 1":
                     # Mode 1: Left stick = CH4 horiz, CH2 vert; Right stick = CH1 horiz, CH3 vert
-                    self.viz1.set_values(ch[3], ch[1])  # CH4 horizontal, CH2 vertical
-                    self.viz2.set_values(ch[0], ch[2])  # CH1 horizontal, CH3 vertical
+                    self.viz1.set_values(ch[3], ch[1], ch_mapped[3], ch_mapped[1])  # CH4 horizontal, CH2 vertical
+                    self.viz2.set_values(ch[0], ch[2], ch_mapped[0], ch_mapped[2])  # CH1 horizontal, CH3 vertical
                 else:  # Mode 2
                     # Mode 2: Left stick = CH4 horiz, CH3 vert; Right stick = CH1 horiz, CH2 vert
-                    self.viz1.set_values(ch[3], ch[2])  # CH4 horizontal, CH3 vertical
-                    self.viz2.set_values(ch[0], ch[1])  # CH1 horizontal, CH2 vertical
+                    self.viz1.set_values(ch[3], ch[2], ch_mapped[3], ch_mapped[2])  # CH4 horizontal, CH3 vertical
+                    self.viz2.set_values(ch[0], ch[1], ch_mapped[0], ch_mapped[1])  # CH1 horizontal, CH2 vertical
         except Exception:
             pass
 
