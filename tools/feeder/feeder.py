@@ -55,14 +55,16 @@ class NoWheelComboBox(QtWidgets.QComboBox):
 
 class JoystickVisualizer(QtWidgets.QWidget):
     """Visual joystick position indicator"""
-    def __init__(self):
+    def __init__(self, h_channel=1, v_channel=2):
         super().__init__()
         self.h_value = 1500  # Center position
         self.v_value = 1500  # Center position
         self.h_mapped = False  # Whether horizontal channel is mapped
         self.v_mapped = False  # Whether vertical channel is mapped
-        self.setMinimumSize(150, 150)
-        self.setMaximumSize(200, 200)
+        self.h_channel = h_channel  # Horizontal channel number (for bottom label)
+        self.v_channel = v_channel  # Vertical channel number (for left label)
+        self.setMinimumSize(150, 170)  # Extra height for bottom label
+        self.setMaximumSize(200, 220)  # Extra height for bottom label
 
     def set_values(self, h_val, v_val, h_mapped=True, v_mapped=True):
         """Update joystick position (1000-2000 range)
@@ -86,9 +88,9 @@ class JoystickVisualizer(QtWidgets.QWidget):
         # Get widget dimensions
         width = self.width()
         height = self.height()
-        size = min(width, height) - 20
-        offset_x = (width - size) // 2
-        offset_y = (height - size) // 2
+        size = min(width, height) - 35  # Space for labels (left + bottom)
+        offset_x = (width - size) // 2 + 8  # Small offset for left label
+        offset_y = 5  # Top margin, leaving room for bottom label
 
         # Draw outer square (dead zone indicator)
         painter.setPen(QPen(QColor("#555555"), 2))
@@ -122,6 +124,18 @@ class JoystickVisualizer(QtWidgets.QWidget):
             painter.setPen(QPen(QColor("#1e88e5"), 2))
             painter.setBrush(QBrush(QColor("#1e88e5")))
             painter.drawEllipse(stick_x - 8, stick_y - 8, 16, 16)
+
+        # Draw channel labels
+        painter.setPen(QPen(QColor("#e0e0e0")))
+        font = painter.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+
+        # Left label (vertical channel)
+        painter.drawText(0, offset_y, offset_x - 5, size, Qt.AlignRight | Qt.AlignVCenter, f"{self.v_channel}")
+
+        # Bottom label (horizontal channel)
+        painter.drawText(offset_x, offset_y + size + 5, size, 20, Qt.AlignHCenter | Qt.AlignTop, f"{self.h_channel}")
 
 
 class Main(QtWidgets.QWidget):
@@ -210,14 +224,16 @@ class Main(QtWidgets.QWidget):
 
         # Joystick visualizers (hidden when "Channels" mode)
         self.viz_layout = QtWidgets.QHBoxLayout()
+        self.viz_layout.setSpacing(5)  # Reduce spacing between visualizers
+        self.viz_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
 
         # Mode 1 visualizers: Left stick = Rudder/Elevator, Right stick = Aileron/Throttle
-        self.viz1_mode1 = JoystickVisualizer()
-        self.viz2_mode1 = JoystickVisualizer()
+        self.viz1_mode1 = JoystickVisualizer(h_channel=4, v_channel=2)  # CH4 horiz, CH2 vert
+        self.viz2_mode1 = JoystickVisualizer(h_channel=1, v_channel=3)  # CH1 horiz, CH3 vert
 
         # Mode 2 visualizers: Left stick = Rudder/Throttle, Right stick = Aileron/Elevator
-        self.viz1_mode2 = JoystickVisualizer()
-        self.viz2_mode2 = JoystickVisualizer()
+        self.viz1_mode2 = JoystickVisualizer(h_channel=4, v_channel=3)  # CH4 horiz, CH3 vert
+        self.viz2_mode2 = JoystickVisualizer(h_channel=1, v_channel=2)  # CH1 horiz, CH2 vert
 
         # Initialize to Mode 2 by default (will be adjusted when config is loaded)
         self.viz1 = self.viz1_mode2
