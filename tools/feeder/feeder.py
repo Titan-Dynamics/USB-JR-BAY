@@ -153,9 +153,13 @@ class Main(QtWidgets.QWidget):
         self.cfg = DEFAULT_CFG.copy()
         self._load_cfg()
 
-        # CSV logging setup (deferred until first link stats packet)
+        # CSV logging setup
         self.csv_filename = None
-        self.csv_fieldnames = ['timestamp', '1RSS', '2RSS', 'LQ', 'RSNR', 'RFMD', 'TPWR', 'TRSS', 'TLQ', 'TSNR']
+        self.csv_buffer = []  # Buffer for CSV rows (max 600 lines)
+        self.csv_last_write_time = 0.0  # Track last write time for 10Hz throttling
+        self.csv_start_time = None  # Track when logging started for filename
+        # Fieldnames: timestamp, channels 1-16, then link stats
+        self.csv_fieldnames = ['timestamp'] + [f'CH{i+1}' for i in range(CHANNELS)] + ['1RSS', '2RSS', 'LQ', 'RSNR', 'RFMD', 'TPWR', 'TRSS', 'TLQ', 'TSNR']
 
         layout = QtWidgets.QVBoxLayout(self)
 
@@ -407,7 +411,21 @@ class Main(QtWidgets.QWidget):
         self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
         port_layout.addWidget(self.jrBayStatusLabel)
 
-        # Divider between JR Bay status and display mode
+        # Divider between JR Bay status and logging
+        logging_divider = QtWidgets.QFrame()
+        logging_divider.setFrameShape(QtWidgets.QFrame.VLine)
+        logging_divider.setFrameShadow(QtWidgets.QFrame.Sunken)
+        logging_divider.setLineWidth(2)
+        port_layout.addWidget(logging_divider)
+
+        # Logging checkbox
+        self.logging_enabled = QtWidgets.QCheckBox("Logging enabled")
+        self.logging_enabled.setChecked(self.cfg.get("logging_enabled", False))
+        self.logging_enabled.setFixedHeight(WIDGET_HEIGHT)
+        self.logging_enabled.toggled.connect(self._on_logging_toggled)
+        port_layout.addWidget(self.logging_enabled)
+
+        # Divider between logging and display mode
         display_divider = QtWidgets.QFrame()
         display_divider.setFrameShape(QtWidgets.QFrame.VLine)
         display_divider.setFrameShadow(QtWidgets.QFrame.Sunken)
@@ -504,9 +522,6 @@ class Main(QtWidgets.QWidget):
         self.tabs.setTabText(1, self._module_status)
 
     def onTel(self, d):
-        # Log to CSV
-        self._log_link_stats_to_csv(d)
-
         for k, v in d.items():
             if k in self.telLabels:
                 try:
@@ -718,8 +733,13 @@ class Main(QtWidgets.QWidget):
         except Exception as e:
             self.onDebug(f"TX heartbeat check failed: {e}")
 
-        # Link stats timeout check
+        # CSV logging at 10Hz (if enabled)
         now = time.time()
+        if self.logging_enabled.isChecked() and (now - self.csv_last_write_time) >= 0.1:  # 10Hz = 100ms
+            self._log_to_csv(ch)
+            self.csv_last_write_time = now
+
+        # Link stats timeout check
         timeout = now - self.serThread.last_link_stats_time > 5.0
         color = "#888888" if timeout else "#e0e0e0"
         for lab in self.telLabels.values():
@@ -963,13 +983,31 @@ class Main(QtWidgets.QWidget):
         self.cfg["console_expanded"] = self.log_expanded
         self._save_cfg_disk()
 
+    def _on_logging_toggled(self, checked):
+        """Handle logging checkbox toggle"""
+        self.cfg["logging_enabled"] = checked
+        self._save_cfg_disk()
+        if checked:
+            # Capture start time for filename
+            self.csv_start_time = datetime.now()
+            # Start logging - create CSV file
+            self._setup_csv_logging()
+        else:
+            # Stop logging - flush buffer and close
+            self._flush_csv_buffer()
+            if self.csv_filename:
+                self.onDebug(f"CSV logging stopped: {self.csv_filename}")
+                self.csv_filename = None
+                self.csv_start_time = None
+
     def closeEvent(self, e):
         try:
             self.serThread.close()
         except:
             pass
-        # Close CSV logging
+        # Flush and close CSV logging
         try:
+            self._flush_csv_buffer()
             if hasattr(self, 'csv_filename') and self.csv_filename:
                 self.onDebug(f"CSV logging stopped: {self.csv_filename}")
         except:
@@ -996,47 +1034,86 @@ class Main(QtWidgets.QWidget):
         self.onDebug(f"Move an axis or press a button to map CH{row.idx+1} …")
 
     def _setup_csv_logging(self):
-        """Initialize CSV logging for link stats on first packet"""
+        """Initialize CSV logging with link stats and channel outputs"""
         try:
-            # Create CSV filename with timestamp in the same folder as the script
+            # Create logs directory if it doesn't exist
             script_dir = os.path.dirname(os.path.abspath(__file__))
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.csv_filename = os.path.join(script_dir, f"link_stats_{timestamp}.csv")
+            logs_dir = os.path.join(script_dir, "logs")
+            os.makedirs(logs_dir, exist_ok=True)
+
+            # Use start time for filename (captured when logging was enabled)
+            timestamp = self.csv_start_time.strftime("%Y%m%d_%H%M%S") if self.csv_start_time else datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.csv_filename = os.path.join(logs_dir, f"data_log_{timestamp}.csv")
 
             # Create CSV file and write header
             with open(self.csv_filename, 'w', newline='') as csvfile:
                 writer = csv.DictWriter(csvfile, fieldnames=self.csv_fieldnames)
                 writer.writeheader()
 
+            # Clear buffer
+            self.csv_buffer = []
             self.onDebug(f"CSV logging started: {self.csv_filename}")
         except Exception as e:
             self.onDebug(f"CSV logging setup error: {e}")
             self.csv_filename = None
 
-    def _log_link_stats_to_csv(self, stats_dict):
-        """Log link statistics to CSV file, creating file on first packet"""
-        # Create CSV file on first link stats packet
+    def _log_to_csv(self, channel_values):
+        """Add data to CSV buffer (link stats + channels), flush when buffer reaches 600 lines"""
         if self.csv_filename is None:
-            self._setup_csv_logging()
-            # If setup failed, return early
-            if self.csv_filename is None:
-                return
+            return
 
         try:
             # Create row with timestamp
             row = {'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]}
 
-            # Add all link stats fields
-            for field in self.csv_fieldnames[1:]:  # Skip 'timestamp'
-                row[field] = stats_dict.get(field, '')
+            # Add link stats (get latest from telemetry labels)
+            link_stats_fields = ['1RSS', '2RSS', 'LQ', 'RSNR', 'RFMD', 'TPWR', 'TRSS', 'TLQ', 'TSNR']
+            for field in link_stats_fields:
+                try:
+                    text = self.telLabels.get(field, QtWidgets.QLabel("--")).text()
+                    # Extract numeric value (remove units)
+                    if text and text != "--":
+                        row[field] = text.split()[0]  # Get first token (the number)
+                    else:
+                        row[field] = ''
+                except Exception:
+                    row[field] = ''
 
-            # Append to CSV file
-            with open(self.csv_filename, 'a', newline='') as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=self.csv_fieldnames)
-                writer.writerow(row)
+            # Add channel values (only for mapped channels)
+            for i in range(CHANNELS):
+                if i < len(channel_values):
+                    # Check if channel is mapped
+                    src = self.rows[i].src.currentText() if i < len(self.rows) else "none"
+                    if src != "none":
+                        row[f'CH{i+1}'] = channel_values[i]
+                    else:
+                        row[f'CH{i+1}'] = ''
+                else:
+                    row[f'CH{i+1}'] = ''
+
+            # Add to buffer
+            self.csv_buffer.append(row)
+
+            # Flush if buffer reaches 600 lines
+            if len(self.csv_buffer) >= 600:
+                self._flush_csv_buffer()
+
         except Exception as e:
             # Avoid spamming the log with CSV errors
             pass
+
+    def _flush_csv_buffer(self):
+        """Write buffered CSV data to file"""
+        if not self.csv_buffer or self.csv_filename is None:
+            return
+
+        try:
+            with open(self.csv_filename, 'a', newline='') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=self.csv_fieldnames)
+                writer.writerows(self.csv_buffer)
+            self.csv_buffer = []
+        except Exception as e:
+            self.onDebug(f"CSV flush error: {e}")
 
 
 
