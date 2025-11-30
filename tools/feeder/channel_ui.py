@@ -5,11 +5,380 @@ This module contains UI components for channel configuration and mapping.
 """
 
 import math
-from PyQt5 import QtWidgets, QtCore
+from PyQt5 import QtWidgets, QtCore, QtGui
 
 
 # Source type choices for channel mapping
-SRC_CHOICES = ["axis", "button", "none"]
+SRC_CHOICES = ["axis", "button", "multi", "none"]
+
+
+class MultiButtonRow(QtWidgets.QWidget):
+    """A row for displaying and configuring a multi-button mapping."""
+
+    def __init__(self, btn_idx, output_val, min_val, max_val, parent_dialog=None, is_pending=False):
+        super().__init__()
+        self.btn_idx = btn_idx
+        self.output_val = output_val
+        self.min_val = min_val
+        self.max_val = max_val
+        self.parent_dialog = parent_dialog
+        self.is_pending = is_pending  # True if waiting for button press
+
+        layout = QtWidgets.QHBoxLayout(self)
+        layout.setContentsMargins(4, 1, 4, 1)
+        layout.setSpacing(6)
+
+        if is_pending:
+            # Pending state: waiting for button press
+            self.status_lbl = QtWidgets.QLabel("Press a button to map...")
+            self.status_lbl.setStyleSheet("color: #888888; font-style: italic;")
+            layout.addWidget(self.status_lbl)
+            layout.addStretch()
+        else:
+            # Configured state: show button number and value
+            self.btn_lbl = QtWidgets.QLabel(f"Button {btn_idx}")
+            self.btn_lbl.setFixedHeight(22)
+            layout.addWidget(self.btn_lbl)
+
+            # Stretch to push value and X to the right
+            layout.addStretch()
+
+            # Output value
+            self.val_box = QtWidgets.QSpinBox()
+            self.val_box.setRange(min_val, max_val)
+            self.val_box.setValue(output_val)
+            self.val_box.setMaximumWidth(65)
+            self.val_box.setFixedHeight(22)
+            layout.addWidget(self.val_box)
+
+            # Remove button (elegant X)
+            self.remove_btn = QtWidgets.QPushButton("✕")
+            self.remove_btn.setFixedWidth(18)
+            self.remove_btn.setFixedHeight(22)
+            self.remove_btn.setStyleSheet("background-color: transparent; border: none; padding: 0px; margin: 0px; color: #e0e0e0;")
+            layout.addWidget(self.remove_btn)
+
+    def get_config(self):
+        """Get the current configuration from this row."""
+        if not self.is_pending:
+            return (str(self.btn_idx), self.val_box.value())
+        return None
+
+    def set_highlighted(self, highlighted):
+        """Highlight this row when its button is pressed."""
+        if highlighted:
+            self.setStyleSheet("background-color: #1e88e5; border-radius: 3px;")
+        else:
+            self.setStyleSheet("")
+
+    def finalize_with_button(self, btn_idx, output_val):
+        """Convert from pending to configured state."""
+        self.btn_idx = btn_idx
+        self.output_val = output_val
+        self.is_pending = False
+
+        # Clear layout
+        while self.layout().count():
+            item = self.layout().takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        layout = self.layout()
+        layout.setContentsMargins(4, 1, 4, 1)
+        layout.setSpacing(6)
+
+        # Button label
+        self.btn_lbl = QtWidgets.QLabel(f"Button {btn_idx}")
+        self.btn_lbl.setFixedHeight(22)
+        layout.addWidget(self.btn_lbl)
+
+        # Stretch to push value and X to the right
+        layout.addStretch()
+
+        # Output value
+        self.val_box = QtWidgets.QSpinBox()
+        self.val_box.setRange(self.min_val, self.max_val)
+        self.val_box.setValue(output_val)
+        self.val_box.setMaximumWidth(65)
+        self.val_box.setFixedHeight(22)
+        layout.addWidget(self.val_box)
+
+        # Remove button
+        self.remove_btn = QtWidgets.QPushButton("✕")
+        self.remove_btn.setFixedWidth(18)
+        self.remove_btn.setFixedHeight(22)
+        self.remove_btn.setStyleSheet("background-color: transparent; border: none; padding: 0px; margin: 0px; color: #e0e0e0;")
+        layout.addWidget(self.remove_btn)
+
+        if hasattr(self.parent_dialog, '_on_remove_row'):
+            self.remove_btn.clicked.connect(lambda: self.parent_dialog._on_remove_row(self))
+
+
+class MultiButtonDialog(QtWidgets.QDialog):
+    """Dialog for managing multi-button mappings."""
+
+    def __init__(self, button_map, min_val, max_val, parent=None):
+        """Initialize multi-button dialog.
+
+        Args:
+            button_map: Dictionary mapping button indices to output values
+            min_val: Minimum output value
+            max_val: Maximum output value
+            parent: Parent widget
+        """
+        super().__init__(parent)
+        self.setWindowTitle("Multi-Button Configuration")
+        self.setModal(True)
+        # Remove question mark icon from title bar
+        self.setWindowFlags(self.windowFlags() & ~QtCore.Qt.WindowContextHelpButtonHint)
+        self.resize(225, 245)  # Compact width, reduced height
+        self.button_map = button_map.copy() if button_map else {}
+        self.button_map_order = list(self.button_map.keys())  # Preserve insertion order
+        self.min_val = min_val
+        self.max_val = max_val
+        self.parent_channel = parent
+        self._mapping_row = None  # Track which row is being mapped (pending row)
+        self._button_rows = []  # List of MultiButtonRow widgets
+        self._last_button_press_states = {}  # Track last button press state for each button
+        # Apply dark theme
+        self.setStyleSheet(self._get_dark_stylesheet())
+        self._init_ui()
+        # Set dark title bar on Windows
+        self._set_dark_title_bar()
+        # Start timer to detect button presses
+        self._update_timer = QtCore.QTimer()
+        self._update_timer.timeout.connect(self._check_button_press)
+        self._update_timer.start(50)  # Check every 50ms
+
+    def _get_dark_stylesheet(self):
+        """Get dark theme stylesheet for this dialog."""
+        return """
+            QDialog {{
+                background-color: #2b2b2b;
+                color: #e0e0e0;
+            }}
+            QLabel {{
+                color: #e0e0e0;
+            }}
+            QTableWidget {{
+                background-color: #3c3c3c;
+                alternate-background-color: #343434;
+                gridline-color: #555555;
+                color: #e0e0e0;
+            }}
+            QTableWidget::item {{
+                padding: 4px;
+            }}
+            QHeaderView::section {{
+                background-color: #2b2b2b;
+                color: #e0e0e0;
+                padding: 4px;
+                border: 1px solid #555555;
+            }}
+            QSpinBox {{
+                background-color: #3c3c3c;
+                color: #e0e0e0;
+                border: 1px solid #555555;
+                padding: 2px;
+            }}
+            QPushButton {{
+                background-color: #3c3c3c;
+                color: #e0e0e0;
+                border: 1px solid #555555;
+                padding: 4px 12px;
+                border-radius: 3px;
+            }}
+            QPushButton:hover {{
+                background-color: #4a4a4a;
+                border: 1px solid #666666;
+            }}
+            QPushButton:pressed {{
+                background-color: #2a2a2a;
+            }}
+            QDialogButtonBox {{
+                button-layout: 0;
+            }}
+        """
+
+    def _set_dark_title_bar(self):
+        """Set dark title bar on Windows 10/11"""
+        try:
+            import platform
+            if platform.system() == "Windows":
+                # For Windows 10/11, use DWM API to enable dark title bar
+                try:
+                    from ctypes import windll, c_int, byref, sizeof
+                    HWND = int(self.winId())
+                    # DWMWA_USE_IMMERSIVE_DARK_MODE = 20 (Windows 11) or 19 (Windows 10 older builds)
+                    DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+                    value = c_int(1)  # 1 = dark mode, 0 = light mode
+                    windll.dwmapi.DwmSetWindowAttribute(HWND, DWMWA_USE_IMMERSIVE_DARK_MODE, byref(value), sizeof(value))
+                except Exception:
+                    # Try the older Windows 10 attribute if the newer one fails
+                    try:
+                        DWMWA_USE_IMMERSIVE_DARK_MODE = 19
+                        value = c_int(1)
+                        windll.dwmapi.DwmSetWindowAttribute(HWND, DWMWA_USE_IMMERSIVE_DARK_MODE, byref(value), sizeof(value))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def _init_ui(self):
+        """Initialize dialog UI."""
+        layout = QtWidgets.QVBoxLayout()
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
+
+        # Scrollable area for button rows
+        scroll_area = QtWidgets.QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet("QScrollArea { border: none; }")
+        scroll_widget = QtWidgets.QWidget()
+        self.rows_layout = QtWidgets.QVBoxLayout(scroll_widget)
+        self.rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.rows_layout.setSpacing(1)
+
+        # Populate with existing mappings (in order)
+        for btn_idx_str in self.button_map_order:
+            btn_idx = int(btn_idx_str)
+            val = self.button_map[btn_idx_str]
+            self._add_row(btn_idx, val)
+
+        self.rows_layout.addStretch()  # Push rows to top
+        scroll_area.setWidget(scroll_widget)
+        layout.addWidget(scroll_area, 1)  # Give scroll area most space
+
+        # Add button
+        add_btn = QtWidgets.QPushButton("Add Button")
+        add_btn.setMaximumHeight(24)
+        add_btn.clicked.connect(self._add_button)
+        layout.addWidget(add_btn)
+
+        # Add vertical padding between Add Button and Save/Cancel (same as horizontal gap between buttons)
+        layout.addSpacing(4)
+
+        # Dialog buttons in a horizontal layout taking full width
+        buttons_layout = QtWidgets.QHBoxLayout()
+        buttons_layout.setContentsMargins(0, 0, 0, 0)
+        buttons_layout.setSpacing(4)
+
+        save_btn = QtWidgets.QPushButton("Save")
+        cancel_btn = QtWidgets.QPushButton("Cancel")
+
+        save_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+
+        buttons_layout.addWidget(save_btn)
+        buttons_layout.addWidget(cancel_btn)
+
+        layout.addLayout(buttons_layout)
+
+        self.setLayout(layout)
+
+    def _add_row(self, btn_idx, val):
+        """Add a configured row to the list."""
+        row = MultiButtonRow(btn_idx, val, self.min_val, self.max_val, self, is_pending=False)
+        row.remove_btn.clicked.connect(lambda: self._on_remove_row(row))
+        self._button_rows.append(row)
+        # Insert before the stretch
+        self.rows_layout.insertWidget(len(self._button_rows) - 1, row)
+
+    def _add_button(self):
+        """Add a pending button mapping row waiting for button press."""
+        # Get list of already mapped buttons
+        mapped_buttons = set()
+        for row in self._button_rows:
+            if not row.is_pending:
+                mapped_buttons.add(row.btn_idx)
+
+        # Check if there's already a pending row
+        if self._mapping_row is not None:
+            return  # Already adding a button
+
+        # Calculate default output value based on number of mapped buttons
+        num_mapped = len(mapped_buttons)
+        default_values = [1200, 1320, 1440, 1560, 1680, 1800]
+        if num_mapped < len(default_values):
+            default_val = default_values[num_mapped]
+        else:
+            default_val = 1800
+
+        # Create a pending row with calculated default value
+        row = MultiButtonRow(0, default_val, self.min_val, self.max_val, self, is_pending=True)
+        self._button_rows.append(row)
+        self._mapping_row = row  # Mark as the row to be mapped
+        # Insert before the stretch
+        self.rows_layout.insertWidget(len(self._button_rows) - 1, row)
+
+    def _on_remove_row(self, row):
+        """Remove a row from the list."""
+        if row in self._button_rows:
+            self._button_rows.remove(row)
+            self.rows_layout.removeWidget(row)
+            row.deleteLater()
+            if row == self._mapping_row:
+                self._mapping_row = None
+
+    def _check_button_press(self):
+        """Check if a button is pressed while waiting for mapping."""
+        if self._mapping_row is None or not self.parent_channel:
+            return
+
+        # Try to get button states from parent
+        try:
+            # The parent channel needs to provide button states
+            # For now, we'll rely on the mapping system to tell us
+            pass
+        except Exception:
+            pass
+
+    def set_mapped_button(self, btn_idx):
+        """Called by parent channel when a button is mapped (for pending row)."""
+        if self._mapping_row is not None:
+            # Check if this button is already mapped
+            for row in self._button_rows:
+                if not row.is_pending and row.btn_idx == btn_idx:
+                    # Button already mapped, cancel the pending row
+                    self._on_remove_row(self._mapping_row)
+                    return
+
+            # Convert pending row to configured row with its calculated output value
+            output_val = self._mapping_row.output_val
+            self._mapping_row.finalize_with_button(btn_idx, output_val)
+            self._mapping_row = None
+
+    def update_button_highlight(self, button_states):
+        """Update row highlighting based on which button is currently pressed.
+
+        Args:
+            button_states: List of button states (0 or 1 for each button index)
+        """
+        # Clear all highlighting
+        for row in self._button_rows:
+            row.set_highlighted(False)
+
+        # Highlight row if its button is currently pressed
+        for row in self._button_rows:
+            if not row.is_pending and row.btn_idx < len(button_states):
+                if button_states[row.btn_idx] == 1:
+                    row.set_highlighted(True)
+
+    def get_button_map(self):
+        """Get the button map from the dialog."""
+        button_map = {}
+        # Preserve insertion order, skip pending rows
+        for row in self._button_rows:
+            cfg = row.get_config()
+            if cfg is not None:
+                btn_idx_str, val = cfg
+                button_map[btn_idx_str] = val
+        return button_map
+
+    def closeEvent(self, event):
+        """Stop the timer when dialog is closed."""
+        self._update_timer.stop()
+        super().closeEvent(event)
 
 
 def map_axis_to_range(val, inv, mn, ct, mx):
@@ -151,6 +520,11 @@ class ChannelRow(QtWidgets.QWidget):
         self.mapBtn = QtWidgets.QPushButton("Map")
         self.mapBtn.setMaximumWidth(70)
 
+        self.multiButtonBtn = QtWidgets.QPushButton("Configure")
+        self.multiButtonBtn.setMaximumWidth(70)
+        self.multiButtonBtn.setVisible(False)
+        self.multiButtonBtn.setEnabled(False)
+
         # Update progress bar range based on min/max values
         def update_bar_range():
             self.bar.setRange(self.minBox.value(), self.maxBox.value())
@@ -159,16 +533,17 @@ class ChannelRow(QtWidgets.QWidget):
         self.maxBox.valueChanged.connect(update_bar_range)
         update_bar_range()
 
-        # Top row: CHX, Name, Axis, IDX, Map, %, 1500
+        # Top row: CHX, Name, Axis, IDX, Map/Configure, %, 1500
         topLayout = QtWidgets.QHBoxLayout()
         topLayout.addWidget(self.lbl)
         topLayout.addWidget(self.nameBox)
         topLayout.addWidget(self.src)
-        self.idxLbl = QtWidgets.QLabel("idx")
+        self.idxLbl = QtWidgets.QLabel("id")
         self.idxLbl.setMaximumWidth(30)
         topLayout.addWidget(self.idxLbl)
         topLayout.addWidget(self.idxBox)
         topLayout.addWidget(self.mapBtn)
+        topLayout.addWidget(self.multiButtonBtn)
         topLayout.addWidget(self.bar, 1)  # progress bar gets stretch
         topLayout.addWidget(self.val)
         layout.addLayout(topLayout, 0, 0, 1, 15)
@@ -213,6 +588,7 @@ class ChannelRow(QtWidgets.QWidget):
             w.valueChanged.connect(self.changed.emit)
 
         self.mapBtn.clicked.connect(self._on_map)
+        self.multiButtonBtn.clicked.connect(self._on_configure_multibutton)
 
         # Initial visual state
         self._update_visual_state()
@@ -223,16 +599,36 @@ class ChannelRow(QtWidgets.QWidget):
         self._btn_rotary_state = 0
         self._prev_btn_idx = self.idxBox.value()
         self._toggle_activated_time = 0  # Track when toggle was last activated
+        self._multi_button_map = cfg.get("multi_button_map", {})  # Multi-button mapping
+        self._multi_button_last_states = {}  # Track last state of each multi-button
+        self._multi_button_current_value = None  # Current held value for multi-button
+        self._active_multibutton_dialog = None  # Reference to active dialog for mapping
 
     def _on_map(self):
         """Handle map button click."""
         self.mapRequested.emit(self)
+
+    def _on_configure_multibutton(self):
+        """Handle multi-button configuration button click."""
+        dialog = MultiButtonDialog(
+            self._multi_button_map,
+            self.minBox.value(),
+            self.maxBox.value(),
+            self
+        )
+        self._active_multibutton_dialog = dialog  # Store reference for mapping
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            self._multi_button_map = dialog.get_button_map()
+            self._multi_button_last_states = {btn_idx: 0 for btn_idx in self._multi_button_map}
+            self.changed.emit()
+        self._active_multibutton_dialog = None
 
     def _update_visual_state(self):
         """Update visual state based on source selection."""
         is_mapped = self.src.currentText() != "none"
         src = self.src.currentText()
         is_axis = src == "axis"
+        is_multi = src == "multi"
 
         # List of widgets to enable/disable (Map button excluded - always enabled)
         widgets_to_control = [
@@ -269,13 +665,13 @@ class ChannelRow(QtWidgets.QWidget):
             else:
                 label.setStyleSheet("")
 
-        # Toggle and rotary only enabled for button source
-        self.toggleBox.setEnabled(is_mapped and not is_axis)
-        self.rotaryBox.setEnabled(is_mapped and not is_axis)
-        if not is_mapped or is_axis:
+        # Toggle and rotary only enabled for button source (and not multi)
+        self.toggleBox.setEnabled(is_mapped and not is_axis and not is_multi)
+        self.rotaryBox.setEnabled(is_mapped and not is_axis and not is_multi)
+        if not is_mapped or is_axis or is_multi:
             self.toggleBox.setStyleSheet("color: #666666;")
             self.rotaryBox.setStyleSheet("color: #666666;")
-            # Uncheck toggle and rotary if not a button source
+            # Uncheck toggle and rotary if not a button source or multi-button
             if self.toggleBox.isChecked() or self.rotaryBox.isChecked():
                 self.toggleBox.blockSignals(True)
                 self.rotaryBox.blockSignals(True)
@@ -288,6 +684,12 @@ class ChannelRow(QtWidgets.QWidget):
         else:
             self.toggleBox.setStyleSheet("")
             self.rotaryBox.setStyleSheet("")
+
+        # Hide toggle and rotary widgets entirely for multi
+        self.toggleBox.setVisible(not is_multi)
+        self.toggleGroupBox.setVisible(not is_multi)
+        self.rotaryBox.setVisible(not is_multi)
+        self.rotaryStopsBox.setVisible(not is_multi)
 
         # Inv button disabled if rotary is selected
         is_rotary = self.rotaryBox.isChecked()
@@ -303,6 +705,28 @@ class ChannelRow(QtWidgets.QWidget):
         # Map button is always enabled
         self.mapBtn.setEnabled(True)
         self.mapBtn.setStyleSheet("")
+
+        # Multi configure button only visible for multi source
+        self.multiButtonBtn.setVisible(is_multi)
+        self.multiButtonBtn.setEnabled(is_multi)
+
+        # Hide idx controls for multi (buttons are configured in dialog)
+        self.idxLbl.setVisible(not is_multi)
+        self.idxBox.setVisible(not is_multi)
+
+        # Hide reverse for multi
+        self.inv.setVisible(not is_multi)
+
+        # Hide entire bottom row for multi
+        self.minLbl.setVisible(not is_multi)
+        self.minBox.setVisible(not is_multi)
+        self.midLbl.setVisible(not is_multi)
+        self.midBox.setVisible(not is_multi)
+        self.maxLbl.setVisible(not is_multi)
+        self.maxBox.setVisible(not is_multi)
+
+        # Hide Map button when multi is selected
+        self.mapBtn.setVisible(not is_multi)
 
         # Set default output value based on mapped state
         if not is_mapped:
@@ -384,6 +808,41 @@ class ChannelRow(QtWidgets.QWidget):
                 eff = v
                 out = mx if (eff ^ inv) else mn
             self._btn_last = v
+        elif src == "multi":
+            # Multi mode: check each configured button and set value
+            # Check for any button presses and update the current value
+            for btn_idx_str, btn_val in self._multi_button_map.items():
+                btn_idx = int(btn_idx_str)
+                v = btns[btn_idx] if btn_idx < len(btns) else 0
+
+                # Initialize last state if needed
+                if btn_idx_str not in self._multi_button_last_states:
+                    self._multi_button_last_states[btn_idx_str] = 0
+
+                # Detect button press (transition from 0 to 1)
+                if self._multi_button_last_states[btn_idx_str] == 0 and v == 1:
+                    self._multi_button_current_value = btn_val
+
+                self._multi_button_last_states[btn_idx_str] = v
+
+            # Check if dialog is open and waiting for button press
+            if hasattr(self, '_active_multibutton_dialog') and self._active_multibutton_dialog:
+                # Update highlighting in dialog based on current button states
+                self._active_multibutton_dialog.update_button_highlight(btns)
+
+                # Dialog is waiting for button mapping - detect any button press
+                if self._active_multibutton_dialog._mapping_row is not None:
+                    for btn_idx in range(len(btns)):
+                        v = btns[btn_idx]
+                        if btn_idx not in self._multi_button_last_states:
+                            self._multi_button_last_states[btn_idx] = 0
+                        # Detect button press (any button being mapped)
+                        if self._multi_button_last_states[btn_idx] == 0 and v == 1:
+                            self._active_multibutton_dialog.set_mapped_button(btn_idx)
+                        self._multi_button_last_states[btn_idx] = v
+
+            # Use the current value if set, otherwise minimum
+            out = self._multi_button_current_value if self._multi_button_current_value is not None else mn
         else:
             # src == "none": non-mapped channel
             out = mn
@@ -405,7 +864,7 @@ class ChannelRow(QtWidgets.QWidget):
         else:
             saved_group = dropdown_index - 1  # Groups 1-8 stored as 0-7
 
-        return {
+        cfg = {
             "name": self.nameBox.text(),
             "src": self.src.currentText(),
             "idx": self.idxBox.value(),
@@ -418,14 +877,23 @@ class ChannelRow(QtWidgets.QWidget):
             "center": self.midBox.value(),
             "max": self.maxBox.value(),
         }
+        # Add multi-button map if present
+        if self._multi_button_map:
+            cfg["multi_button_map"] = self._multi_button_map
+        return cfg
 
     def set_mapping(self, src: str, idx: int):
         """Set channel mapping.
 
         Args:
-            src: Source type ("axis", "button", or "none")
+            src: Source type ("axis", "button", "multi", or "none")
             idx: Source index
         """
-        if src in SRC_CHOICES:
-            self.src.setCurrentText(src)
-        self.idxBox.setValue(idx)
+        # If dialog is active, pass the mapping to it
+        if hasattr(self, '_active_multibutton_dialog') and self._active_multibutton_dialog:
+            self._active_multibutton_dialog.set_mapped_button(idx)
+        else:
+            # Normal mapping for non-multi channels
+            if src in SRC_CHOICES:
+                self.src.setCurrentText(src)
+            self.idxBox.setValue(idx)
