@@ -55,10 +55,8 @@ class NoWheelComboBox(QtWidgets.QComboBox):
 
 class JoystickVisualizer(QtWidgets.QWidget):
     """Visual joystick position indicator"""
-    def __init__(self, h_label="", v_label=""):
+    def __init__(self):
         super().__init__()
-        self.h_label = h_label
-        self.v_label = v_label
         self.h_value = 1500  # Center position
         self.v_value = 1500  # Center position
         self.setMinimumSize(150, 150)
@@ -193,13 +191,27 @@ class Main(QtWidgets.QWidget):
 
         # Joystick visualizers (hidden when "Channels" mode)
         self.viz_layout = QtWidgets.QHBoxLayout()
-        self.viz1 = JoystickVisualizer("CH4 (Rudder)", "CH3 (Throttle)")
-        self.viz2 = JoystickVisualizer("CH1 (Aileron)", "CH2 (Elevator)")
+
+        # Mode 1 visualizers: Left stick = Rudder/Elevator, Right stick = Aileron/Throttle
+        self.viz1_mode1 = JoystickVisualizer()
+        self.viz2_mode1 = JoystickVisualizer()
+
+        # Mode 2 visualizers: Left stick = Rudder/Throttle, Right stick = Aileron/Elevator
+        self.viz1_mode2 = JoystickVisualizer()
+        self.viz2_mode2 = JoystickVisualizer()
+
+        # Initialize to Mode 2 by default (will be adjusted when config is loaded)
+        self.viz1 = self.viz1_mode2
+        self.viz2 = self.viz2_mode2
+        self.current_mode = "Mode 2"
+
         self.viz_layout.addWidget(self.viz1)
         self.viz_layout.addWidget(self.viz2)
         self.viz_widget = QtWidgets.QWidget()
         self.viz_widget.setLayout(self.viz_layout)
         right_panel.addWidget(self.viz_widget)
+        # Hide visualizers by default (will be shown if needed when display mode is applied)
+        self.viz_widget.setVisible(False)
 
         # Progress bars for channels 5-16 (or 1-16 in Channels mode)
         bars_widget = QtWidgets.QWidget()
@@ -324,9 +336,21 @@ class Main(QtWidgets.QWidget):
         # Display mode dropdown
         port_layout.addWidget(QtWidgets.QLabel("Display:"))
         self.display_mode = NoWheelComboBox()
-        self.display_mode.addItems(["Sticks and Channels", "Channels"])
+        self.display_mode.addItems(["Channels", "Mode 1 sticks + channels", "Mode 2 sticks + channels"])
         self.display_mode.currentTextChanged.connect(self._on_display_mode_changed)
         port_layout.addWidget(self.display_mode)
+
+        # Set from config (default is "Channels") and apply initial display mode
+        saved_mode = self.cfg.get("display_mode", "Channels")
+        index = self.display_mode.findText(saved_mode)
+        if index >= 0:
+            self.display_mode.setCurrentIndex(index)
+            # Ensure the handler is called even if index is 0 (since currentTextChanged might not fire)
+            if index == 0:
+                self._on_display_mode_changed(saved_mode)
+        else:
+            # If saved mode not found, explicitly apply default
+            self._on_display_mode_changed("Channels")
 
         port_layout.addStretch()
 
@@ -560,8 +584,14 @@ class Main(QtWidgets.QWidget):
         # Update joystick visualizers (CH1-4)
         try:
             if len(ch) >= 4:
-                self.viz1.set_values(ch[3], ch[2])  # CH4 horizontal, CH3 vertical
-                self.viz2.set_values(ch[0], ch[1])  # CH1 horizontal, CH2 vertical
+                if self.current_mode == "Mode 1":
+                    # Mode 1: Left stick = CH4 horiz, CH2 vert; Right stick = CH1 horiz, CH3 vert
+                    self.viz1.set_values(ch[3], ch[1])  # CH4 horizontal, CH2 vertical
+                    self.viz2.set_values(ch[0], ch[2])  # CH1 horizontal, CH3 vertical
+                else:  # Mode 2
+                    # Mode 2: Left stick = CH4 horiz, CH3 vert; Right stick = CH1 horiz, CH2 vert
+                    self.viz1.set_values(ch[3], ch[2])  # CH4 horizontal, CH3 vertical
+                    self.viz2.set_values(ch[0], ch[1])  # CH1 horizontal, CH2 vertical
         except Exception:
             pass
 
@@ -731,19 +761,55 @@ class Main(QtWidgets.QWidget):
         self.portCombo.blockSignals(False)
 
     def _on_display_mode_changed(self, mode):
-        """Handle display mode change between Sticks+Channels and Channels only"""
+        """Handle display mode change between Mode 1, Mode 2, and Channels"""
+        # Save display mode preference to config
+        self.cfg["display_mode"] = mode
+        self._save_cfg_disk()
+
         if mode == "Channels":
             # Hide joystick visualizers and show all channel bars
             self.viz_widget.setVisible(False)
             # Show channels 1-4 in the bars
             for i in range(4):
                 self.bar_widgets[i].setVisible(True)
-        else:  # "Sticks and Channels"
+        elif mode == "Mode 1 sticks + channels":
             # Show joystick visualizers and hide first 4 channel bars
             self.viz_widget.setVisible(True)
             # Hide channels 1-4 from the bars
             for i in range(4):
                 self.bar_widgets[i].setVisible(False)
+            # Swap to Mode 1 visualizers
+            if self.current_mode != "Mode 1":
+                self.viz_layout.removeWidget(self.viz1)
+                self.viz_layout.removeWidget(self.viz2)
+                self.viz1.hide()
+                self.viz2.hide()
+                self.viz1 = self.viz1_mode1
+                self.viz2 = self.viz2_mode1
+                self.viz_layout.addWidget(self.viz1)
+                self.viz_layout.addWidget(self.viz2)
+                self.viz1.show()
+                self.viz2.show()
+                self.current_mode = "Mode 1"
+        elif mode == "Mode 2 sticks + channels":
+            # Show joystick visualizers and hide first 4 channel bars
+            self.viz_widget.setVisible(True)
+            # Hide channels 1-4 from the bars
+            for i in range(4):
+                self.bar_widgets[i].setVisible(False)
+            # Swap to Mode 2 visualizers
+            if self.current_mode != "Mode 2":
+                self.viz_layout.removeWidget(self.viz1)
+                self.viz_layout.removeWidget(self.viz2)
+                self.viz1.hide()
+                self.viz2.hide()
+                self.viz1 = self.viz1_mode2
+                self.viz2 = self.viz2_mode2
+                self.viz_layout.addWidget(self.viz1)
+                self.viz_layout.addWidget(self.viz2)
+                self.viz1.show()
+                self.viz2.show()
+                self.current_mode = "Mode 2"
 
     def _on_port_changed(self, port_display):
         """Handle COM port selection change"""
