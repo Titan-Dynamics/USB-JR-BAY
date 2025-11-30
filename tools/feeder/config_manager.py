@@ -27,11 +27,11 @@ def get_available_ports():
     """Get list of available serial ports.
 
     Returns:
-        List of port names
+        List of tuples (port, description)
     """
     ports = []
     for port, desc, hwid in sorted(serial.tools.list_ports.comports()):
-        ports.append(port)
+        ports.append((port, desc))
     return ports
 
 

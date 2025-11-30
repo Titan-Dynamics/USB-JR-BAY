@@ -281,7 +281,12 @@ class Main(QtWidgets.QWidget):
         self.portCombo = NoWheelComboBox()
         self.portCombo.setMinimumWidth(80)
         self._refresh_port_list()
-        self.portCombo.setCurrentText(self.cfg["serial_port"])
+        # Set current port by finding it in the stored data
+        saved_port = self.cfg["serial_port"]
+        for i in range(self.portCombo.count()):
+            if self.portCombo.itemData(i) == saved_port:
+                self.portCombo.setCurrentIndex(i)
+                break
         self.portCombo.currentTextChanged.connect(self._on_port_changed)
         port_layout.addWidget(self.portCombo)
 
@@ -677,20 +682,33 @@ class Main(QtWidgets.QWidget):
         self.portCombo.blockSignals(True)
         self.portCombo.clear()
         ports = get_available_ports()
-        for port in ports:
-            self.portCombo.addItem(port)
+        for port, desc in ports:
+            # Display port with device name, but store port number as data
+            if desc:
+                display_text = f"{port} - {desc}"
+            else:
+                display_text = port
+            self.portCombo.addItem(display_text, port)
         # If the previous selection still exists, restore it
-        if current and self.portCombo.findText(current) >= 0:
-            self.portCombo.setCurrentText(current)
-        elif ports:
-            # Otherwise select the first available port
+        if current:
+            for i in range(self.portCombo.count()):
+                if self.portCombo.itemData(i) == current:
+                    self.portCombo.setCurrentIndex(i)
+                    self.portCombo.blockSignals(False)
+                    return
+        # Otherwise select the first available port
+        if ports:
             self.portCombo.setCurrentIndex(0)
         self.portCombo.blockSignals(False)
 
-    def _on_port_changed(self, port):
+    def _on_port_changed(self, port_display):
         """Handle COM port selection change"""
-        if not port:
+        if not port_display:
             return
+        # Get the actual port from the combo box data
+        port = self.portCombo.currentData()
+        if not port:
+            port = port_display  # Fallback if data not set
         self.cfg["serial_port"] = port
         self.serThread.reconnect(port, DEFAULT_BAUD)
         self.save_cfg()
