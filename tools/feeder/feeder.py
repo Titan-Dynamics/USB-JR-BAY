@@ -316,10 +316,39 @@ class Main(QtWidgets.QWidget):
         for lab in self.telLabels.values():
             lab.setStyleSheet("color: #888888;")
 
+        # Collapsible log section
+        self.log_container = QtWidgets.QWidget()
+        log_layout = QtWidgets.QVBoxLayout(self.log_container)
+        log_layout.setContentsMargins(0, 4, 0, 0)  # 4px top margin for gap from link stats
+        log_layout.setSpacing(0)
+
+        # Console header (clickable to toggle)
+        self.log_header = QtWidgets.QPushButton("Console ▼")
+        self.log_header.setFlat(True)
+        self.log_header.setStyleSheet("""
+            QPushButton {
+                text-align: left;
+                padding: 5px;
+                background-color: #3c3c3c;
+                border: 1px solid #555555;
+                border-radius: 3px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #4a4a4a;
+            }
+        """)
+        self.log_header.setCursor(QtCore.Qt.PointingHandCursor)
+        self.log_header.clicked.connect(self._toggle_log)
+        log_layout.addWidget(self.log_header)
+
         # Log (fixed height)
-        self.log = QtWidgets.QPlainTextEdit(); self.log.setReadOnly(True)
+        self.log = QtWidgets.QPlainTextEdit()
+        self.log.setReadOnly(True)
         self.log.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.log.setFixedHeight(140)
+        self.log_expanded = True
+        log_layout.addWidget(self.log)
 
         # Tabs for Channels and Configuration
         self.tabs = QtWidgets.QTabWidget()
@@ -442,8 +471,8 @@ class Main(QtWidgets.QWidget):
         # Telemetry (link stats) below the tabs
         layout.addLayout(tel)
 
-        # Log below telemetry
-        layout.addWidget(self.log)
+        # Collapsible log below telemetry
+        layout.addWidget(self.log_container)
 
         # Timer loop
         # Only the tabs area should expand/contract on resize
@@ -915,6 +944,16 @@ class Main(QtWidgets.QWidget):
                                 break
             except Exception as e:
                 self.onDebug(f"Error scheduling Packet Rate reload: {e}")
+
+    def _toggle_log(self):
+        """Toggle console visibility"""
+        self.log_expanded = not self.log_expanded
+        self.log.setVisible(self.log_expanded)
+        # Update arrow indicator
+        if self.log_expanded:
+            self.log_header.setText("Console ▼")
+        else:
+            self.log_header.setText("Console ▶")
 
     def closeEvent(self, e):
         try:
