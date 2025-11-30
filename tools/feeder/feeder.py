@@ -509,8 +509,8 @@ class Main(QtWidgets.QWidget):
                 self.onDebug(f"Mapped CH{self.mapping_row.idx+1} to {src}[{idx}]")
                 self.mapping_row = None
                 self.save_cfg()
-            elif time.time() - self.mapping_started_at > 8.0:
-                # Timeout
+            elif time.time() - self.mapping_started_at > 5.0:
+                # Timeout after 5 seconds
                 try:
                     self.mapping_row.mapBtn.setText("Map")
                     self.mapping_row.mapBtn.setEnabled(True)

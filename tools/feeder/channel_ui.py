@@ -5,6 +5,7 @@ This module contains UI components for channel configuration and mapping.
 """
 
 import math
+import time
 from PyQt5 import QtWidgets, QtCore, QtGui
 
 
@@ -178,6 +179,7 @@ class MultiButtonDialog(QtWidgets.QDialog):
         self.max_val = max_val
         self.parent_channel = parent
         self._mapping_row = None  # Track which row is being mapped (pending row)
+        self._mapping_started_at = 0.0  # Track when mapping started for timeout
         self._button_rows = []  # List of MultiButtonRow widgets
         self._last_button_press_states = {}  # Track last button press state for each button
         # Apply dark theme
@@ -355,6 +357,7 @@ class MultiButtonDialog(QtWidgets.QDialog):
         row = MultiButtonRow(0, default_val, self.min_val, self.max_val, self, is_pending=True)
         self._button_rows.append(row)
         self._mapping_row = row  # Mark as the row to be mapped
+        self._mapping_started_at = time.time()  # Start timeout timer
         # Insert before the stretch
         self.rows_layout.insertWidget(len(self._button_rows) - 1, row)
 
@@ -383,6 +386,11 @@ class MultiButtonDialog(QtWidgets.QDialog):
     def _check_button_press(self):
         """Check if a button is pressed while waiting for mapping."""
         if self._mapping_row is None or not self.parent_channel:
+            return
+
+        # Check for timeout (5 seconds)
+        if time.time() - self._mapping_started_at > 5.0:
+            self._on_remove_row(self._mapping_row)
             return
 
         # Try to get button states from parent
