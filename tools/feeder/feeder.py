@@ -268,7 +268,7 @@ class Main(QtWidgets.QWidget):
         port_layout.addWidget(joy_divider)
 
         # Serial COM controls
-        port_layout.addWidget(QtWidgets.QLabel("COM Port:"))
+        port_layout.addWidget(QtWidgets.QLabel("ESP32 COM Port:"))
 
         self.portCombo = QtWidgets.QComboBox()
         self.portCombo.setMinimumWidth(80)
@@ -291,6 +291,13 @@ class Main(QtWidgets.QWidget):
 
         port_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         channels_tab_layout.addWidget(port_widget)
+
+        # Horizontal divider under the port widget
+        h_divider = QtWidgets.QFrame()
+        h_divider.setFrameShape(QtWidgets.QFrame.HLine)
+        h_divider.setFrameShadow(QtWidgets.QFrame.Sunken)
+        h_divider.setLineWidth(2)
+        channels_tab_layout.addWidget(h_divider)
 
         channels_tab_layout.addLayout(content_layout)
         self.tabs.addTab(channels_tab, "Configuration")
