@@ -45,6 +45,14 @@ TELEMETRY_UNIT_MAP = {
 SEND_HZ = 60
 
 
+class NoWheelComboBox(QtWidgets.QComboBox):
+    """QComboBox that ignores mouse wheel events."""
+
+    def wheelEvent(self, event):
+        """Ignore wheel events to prevent accidental value changes."""
+        event.ignore()
+
+
 class JoystickVisualizer(QtWidgets.QWidget):
     """Visual joystick position indicator"""
     def __init__(self, h_label="", v_label=""):
@@ -270,7 +278,7 @@ class Main(QtWidgets.QWidget):
         # Serial COM controls
         port_layout.addWidget(QtWidgets.QLabel("ESP32 COM Port:"))
 
-        self.portCombo = QtWidgets.QComboBox()
+        self.portCombo = NoWheelComboBox()
         self.portCombo.setMinimumWidth(80)
         self._refresh_port_list()
         self.portCombo.setCurrentText(self.cfg["serial_port"])
@@ -1160,7 +1168,7 @@ class Main(QtWidgets.QWidget):
                 if ftype == 9:  # select/choice
                     row_layout = QtWidgets.QHBoxLayout()
                     label = QtWidgets.QLabel(f"{name}:")
-                    combo = QtWidgets.QComboBox()
+                    combo = NoWheelComboBox()
                     values = field.get('values', [])
                     # If this field has a mapped unit and values are plain numeric strings,
                     # display them with the unit suffix in the UI (but keep the underlying indices the same).
@@ -1220,7 +1228,7 @@ class Main(QtWidgets.QWidget):
                 elif 0 <= ftype <= 8:  # numeric value
                     row_layout = QtWidgets.QHBoxLayout()
                     label = QtWidgets.QLabel(f"{name}:")
-                    combo = QtWidgets.QComboBox()
+                    combo = NoWheelComboBox()
                     # Use parsed min/max/step if present
                     minv = field.get('min') if field.get('min') is not None else 0
                     maxv = field.get('max') if field.get('max') is not None else (minv + 100)
