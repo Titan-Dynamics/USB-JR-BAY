@@ -1036,8 +1036,14 @@ class Main(QtWidgets.QWidget):
     def _setup_csv_logging(self):
         """Initialize CSV logging with link stats and channel outputs"""
         try:
-            # Create logs directory if it doesn't exist
-            script_dir = os.path.dirname(os.path.abspath(__file__))
+            # Use executable directory when running as PyInstaller bundle
+            if getattr(sys, 'frozen', False):
+                # Running as PyInstaller bundle - use executable directory
+                script_dir = os.path.dirname(sys.executable)
+            else:
+                # Running as normal Python script
+                script_dir = os.path.dirname(os.path.abspath(__file__))
+
             logs_dir = os.path.join(script_dir, "logs")
             os.makedirs(logs_dir, exist_ok=True)
 
