@@ -574,7 +574,7 @@ class ChannelRow(QtWidgets.QWidget):
         self.expoBox.setRange(1.0, 5.0)
         self.expoBox.setSingleStep(0.1)
         self.expoBox.setValue(cfg.get("expo", 1.0))
-        self.expoBox.setMaximumWidth(50)
+        self.expoBox.setMaximumWidth(55)
         self.expoBox.setFixedHeight(WIDGET_HEIGHT)
 
         self.inv = QtWidgets.QCheckBox("Reverse")
@@ -694,6 +694,9 @@ class ChannelRow(QtWidgets.QWidget):
         layout.addWidget(self.rotaryStopsBox, 1, 10)
         layout.addWidget(self.expoLbl, 1, 11)
         layout.addWidget(self.expoBox, 1, 12)
+
+        # Add spacer to prevent bottom row from stretching
+        layout.setColumnStretch(13, 1)  # Column 13 absorbs extra space
 
         # Connect signals
         self.nameBox.textChanged.connect(self.changed.emit)
