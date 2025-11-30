@@ -347,7 +347,12 @@ class Main(QtWidgets.QWidget):
         self.log.setReadOnly(True)
         self.log.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.log.setFixedHeight(140)
-        self.log_expanded = True
+
+        # Restore console state from config
+        self.log_expanded = self.cfg.get("console_expanded", True)
+        self.log.setVisible(self.log_expanded)
+        self.log_header.setText("Console ▼" if self.log_expanded else "Console ▶")
+
         log_layout.addWidget(self.log)
 
         # Tabs for Channels and Configuration
@@ -954,6 +959,9 @@ class Main(QtWidgets.QWidget):
             self.log_header.setText("Console ▼")
         else:
             self.log_header.setText("Console ▶")
+        # Save state to config
+        self.cfg["console_expanded"] = self.log_expanded
+        self._save_cfg_disk()
 
     def closeEvent(self, e):
         try:
