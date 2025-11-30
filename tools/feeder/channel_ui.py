@@ -382,7 +382,7 @@ class MultiButtonDialog(QtWidgets.QDialog):
         super().closeEvent(event)
 
 
-def map_axis_to_range(val, inv, mn, ct, mx):
+def map_axis_to_range(val, inv, mn, ct, mx, expo=1.0):
     """Map joystick axis value to output range.
 
     Args:
@@ -391,6 +391,7 @@ def map_axis_to_range(val, inv, mn, ct, mx):
         mn: Minimum output value
         ct: Center output value
         mx: Maximum output value
+        expo: Exponential curve factor (1.0 = linear, >1 = more sensitive at center)
 
     Returns:
         Mapped output value (clamped to [mn, mx])
@@ -410,6 +411,12 @@ def map_axis_to_range(val, inv, mn, ct, mx):
     EPS = 0.002
     if abs(abs(v) - 1.0) < EPS:
         v = math.copysign(1.0, v)
+
+    # Apply exponential curve - symmetric for positive and negative
+    if expo != 1.0 and v != 0.0:
+        # Preserve sign and apply exponential to absolute value
+        sign = 1.0 if v >= 0.0 else -1.0
+        v = sign * (abs(v) ** expo)
 
     # Piecewise linear mapping around the center
     if v >= 0:
@@ -445,7 +452,6 @@ class ChannelRow(QtWidgets.QWidget):
 
         # Widgets
         self.lbl = QtWidgets.QLabel(name)
-        self.lbl.setMaximumWidth(50)
         self.lbl.setFixedHeight(WIDGET_HEIGHT)
 
         self.nameBox = QtWidgets.QLineEdit()
@@ -474,6 +480,17 @@ class ChannelRow(QtWidgets.QWidget):
         self.idxBox.setValue(cfg.get("idx", 0))
         self.idxBox.setMaximumWidth(60)
         self.idxBox.setFixedHeight(WIDGET_HEIGHT)
+
+        self.expoLbl = QtWidgets.QLabel("Expo")
+        self.expoLbl.setMaximumWidth(40)
+        self.expoLbl.setFixedHeight(WIDGET_HEIGHT)
+
+        self.expoBox = QtWidgets.QDoubleSpinBox()
+        self.expoBox.setRange(1.0, 5.0)
+        self.expoBox.setSingleStep(0.1)
+        self.expoBox.setValue(cfg.get("expo", 1.0))
+        self.expoBox.setMaximumWidth(50)
+        self.expoBox.setFixedHeight(WIDGET_HEIGHT)
 
         self.inv = QtWidgets.QCheckBox("Reverse")
         self.inv.setChecked(cfg.get("inv", False))
@@ -589,7 +606,9 @@ class ChannelRow(QtWidgets.QWidget):
         layout.addWidget(self.toggleGroupBox, 1, 7)
         layout.addWidget(self.rotaryBox, 1, 8)
         layout.addWidget(self.rotaryStopsBox, 1, 9)
-        layout.addWidget(self.inv, 1, 10)
+        layout.addWidget(self.expoLbl, 1, 10)
+        layout.addWidget(self.expoBox, 1, 11)
+        layout.addWidget(self.inv, 1, 12)
 
         # Connect signals
         self.nameBox.textChanged.connect(self.changed.emit)
@@ -608,7 +627,7 @@ class ChannelRow(QtWidgets.QWidget):
                 else:
                     w.valueChanged.connect(self.changed.emit)
 
-        for w in [self.rotaryStopsBox]:
+        for w in [self.rotaryStopsBox, self.expoBox]:
             w.valueChanged.connect(self.changed.emit)
 
         self.mapBtn.clicked.connect(self._on_map)
@@ -689,14 +708,19 @@ class ChannelRow(QtWidgets.QWidget):
             else:
                 label.setStyleSheet("")
 
+        # Check current states
+        is_toggle_checked = self.toggleBox.isChecked()
+        is_rotary_checked = self.rotaryBox.isChecked()
+
         # Toggle and rotary only enabled for button source (and not multi)
         self.toggleBox.setEnabled(is_mapped and not is_axis and not is_multi)
         self.rotaryBox.setEnabled(is_mapped and not is_axis and not is_multi)
+
         if not is_mapped or is_axis or is_multi:
             self.toggleBox.setStyleSheet("color: #666666;")
             self.rotaryBox.setStyleSheet("color: #666666;")
             # Uncheck toggle and rotary if not a button source or multi-button
-            if self.toggleBox.isChecked() or self.rotaryBox.isChecked():
+            if is_toggle_checked or is_rotary_checked:
                 self.toggleBox.blockSignals(True)
                 self.rotaryBox.blockSignals(True)
                 self.toggleBox.setChecked(False)
@@ -709,11 +733,11 @@ class ChannelRow(QtWidgets.QWidget):
             self.toggleBox.setStyleSheet("")
             self.rotaryBox.setStyleSheet("")
 
-        # Hide toggle and rotary widgets entirely for multi
-        self.toggleBox.setVisible(not is_multi)
-        self.toggleGroupBox.setVisible(not is_multi)
-        self.rotaryBox.setVisible(not is_multi)
-        self.rotaryStopsBox.setVisible(not is_multi)
+        # Hide toggle and rotary widgets for multi or when none selected
+        self.toggleBox.setVisible(is_mapped and not is_multi)
+        self.toggleGroupBox.setVisible(is_mapped and not is_multi)
+        self.rotaryBox.setVisible(is_mapped and not is_multi)
+        self.rotaryStopsBox.setVisible(is_mapped and not is_multi)
 
         # Inv button disabled if rotary is selected
         is_rotary = self.rotaryBox.isChecked()
@@ -723,8 +747,27 @@ class ChannelRow(QtWidgets.QWidget):
         else:
             self.inv.setStyleSheet("")
 
+        # Expo only visible for axis source
+        self.expoLbl.setVisible(is_axis)
+        self.expoBox.setVisible(is_axis)
+        self.expoBox.setEnabled(is_axis)
+
         # Rotary stops only enabled if rotary is checked
-        self.rotaryStopsBox.setEnabled(is_mapped and self.rotaryBox.isChecked())
+        self.rotaryStopsBox.setEnabled(is_mapped and is_rotary_checked)
+
+        # Toggle group box only enabled if toggle is checked
+        self.toggleGroupBox.setEnabled(is_mapped and is_toggle_checked)
+
+        # Gray out disabled controls
+        if not is_toggle_checked or not is_mapped:
+            self.toggleGroupBox.setStyleSheet("color: #666666;")
+        else:
+            self.toggleGroupBox.setStyleSheet("")
+
+        if not is_rotary_checked or not is_mapped:
+            self.rotaryStopsBox.setStyleSheet("color: #666666;")
+        else:
+            self.rotaryStopsBox.setStyleSheet("")
 
         # Map button is always enabled
         self.mapBtn.setEnabled(True)
@@ -734,20 +777,20 @@ class ChannelRow(QtWidgets.QWidget):
         self.multiButtonBtn.setVisible(is_multi)
         self.multiButtonBtn.setEnabled(is_multi)
 
-        # Hide idx controls for multi (buttons are configured in dialog)
-        self.idxLbl.setVisible(not is_multi)
-        self.idxBox.setVisible(not is_multi)
+        # Hide idx controls for multi or when none selected (buttons are configured in dialog)
+        self.idxLbl.setVisible(is_mapped and not is_multi)
+        self.idxBox.setVisible(is_mapped and not is_multi)
 
-        # Hide reverse for multi
-        self.inv.setVisible(not is_multi)
+        # Hide reverse for multi or when none selected
+        self.inv.setVisible(is_mapped and not is_multi)
 
-        # Hide entire bottom row for multi
-        self.minLbl.setVisible(not is_multi)
-        self.minBox.setVisible(not is_multi)
-        self.midLbl.setVisible(not is_multi)
-        self.midBox.setVisible(not is_multi)
-        self.maxLbl.setVisible(not is_multi)
-        self.maxBox.setVisible(not is_multi)
+        # Hide entire bottom row for multi or when none selected
+        self.minLbl.setVisible(is_mapped and not is_multi)
+        self.minBox.setVisible(is_mapped and not is_multi)
+        self.midLbl.setVisible(is_mapped and not is_multi)
+        self.midBox.setVisible(is_mapped and not is_multi)
+        self.maxLbl.setVisible(is_mapped and not is_multi)
+        self.maxBox.setVisible(is_mapped and not is_multi)
 
         # Hide Map button when multi is selected
         self.mapBtn.setVisible(not is_multi)
@@ -759,22 +802,17 @@ class ChannelRow(QtWidgets.QWidget):
             self.val.setText(str(default_val))
 
     def _on_toggle_changed(self):
-        """Handle toggle checkbox - uncheck rotary if toggle is checked."""
-        if self.toggleBox.isChecked() and self.rotaryBox.isChecked():
-            self.rotaryBox.blockSignals(True)
-            self.rotaryBox.setChecked(False)
-            self.rotaryBox.blockSignals(False)
-            self._update_visual_state()
+        """Handle toggle checkbox - enable/disable toggle group box based on toggle state."""
+        is_toggle_checked = self.toggleBox.isChecked()
+
         # Enable/disable toggle group box based on toggle state
-        self.toggleGroupBox.setEnabled(self.toggleBox.isChecked())
+        self.toggleGroupBox.setEnabled(is_toggle_checked)
+
         self.changed.emit()
 
     def _on_rotary_changed(self):
-        """Handle rotary checkbox - uncheck toggle if rotary is checked."""
-        if self.rotaryBox.isChecked() and self.toggleBox.isChecked():
-            self.toggleBox.blockSignals(True)
-            self.toggleBox.setChecked(False)
-            self.toggleBox.blockSignals(False)
+        """Handle rotary checkbox - update visual state."""
+        self._update_visual_state()
         self.changed.emit()
 
     def compute(self, axes, btns):
@@ -793,6 +831,7 @@ class ChannelRow(QtWidgets.QWidget):
         mn = self.minBox.value()
         ct = self.midBox.value()
         mx = self.maxBox.value()
+        expo = self.expoBox.value()
         rotary = self.rotaryBox.isChecked()
         rotary_stops = self.rotaryStopsBox.value()
 
@@ -803,7 +842,7 @@ class ChannelRow(QtWidgets.QWidget):
 
         if src == "axis":
             v = axes[idx] if idx < len(axes) else 0.0
-            out = map_axis_to_range(v, inv, mn, ct, mx)
+            out = map_axis_to_range(v, inv, mn, ct, mx, expo)
         elif src == "button":
             v = btns[idx] if idx < len(btns) else 0
 
@@ -893,6 +932,7 @@ class ChannelRow(QtWidgets.QWidget):
             "src": self.src.currentText(),
             "idx": self.idxBox.value(),
             "inv": self.inv.isChecked(),
+            "expo": self.expoBox.value(),
             "toggle": self.toggleBox.isChecked(),
             "toggle_group": saved_group,
             "rotary": self.rotaryBox.isChecked(),
