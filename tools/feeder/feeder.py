@@ -191,21 +191,26 @@ class Main(QtWidgets.QWidget):
         # Right side: Joystick visualizers and channel indicators
         right_panel = QtWidgets.QVBoxLayout()
 
-        # Joystick visualizers
-        viz_layout = QtWidgets.QHBoxLayout()
+        # Joystick visualizers (hidden when "Channels" mode)
+        self.viz_layout = QtWidgets.QHBoxLayout()
         self.viz1 = JoystickVisualizer("CH4 (Rudder)", "CH3 (Throttle)")
         self.viz2 = JoystickVisualizer("CH1 (Aileron)", "CH2 (Elevator)")
-        viz_layout.addWidget(self.viz1)
-        viz_layout.addWidget(self.viz2)
-        right_panel.addLayout(viz_layout)
+        self.viz_layout.addWidget(self.viz1)
+        self.viz_layout.addWidget(self.viz2)
+        self.viz_widget = QtWidgets.QWidget()
+        self.viz_widget.setLayout(self.viz_layout)
+        right_panel.addWidget(self.viz_widget)
 
-        # Progress bars for channels 5-16
+        # Progress bars for channels 5-16 (or 1-16 in Channels mode)
         bars_widget = QtWidgets.QWidget()
         bars_layout = QtWidgets.QVBoxLayout(bars_widget)
         bars_layout.setSpacing(2)
         self.channel_bars = []
-        for i in range(4, CHANNELS):
-            bar_layout = QtWidgets.QHBoxLayout()
+        self.all_channel_bars = []  # Store all bars including 1-4
+        self.bar_widgets = []  # Store widget containers for visibility toggling
+        for i in range(CHANNELS):
+            bar_container = QtWidgets.QWidget()  # Container for each bar
+            bar_layout = QtWidgets.QHBoxLayout(bar_container)
             bar_layout.setSpacing(5)  # Reduce gap between label and bar
             label = QtWidgets.QLabel(f"{i+1}")
             label.setMinimumWidth(20)
@@ -216,13 +221,22 @@ class Main(QtWidgets.QWidget):
             bar.setMaximumHeight(20)
             bar_layout.addWidget(label)
             bar_layout.addWidget(bar)
-            bars_layout.addLayout(bar_layout)
-            self.channel_bars.append(bar)
+            bar_layout.setContentsMargins(0, 0, 0, 0)
+            bars_layout.addWidget(bar_container)
+            self.all_channel_bars.append(bar)
+            self.bar_widgets.append(bar_container)
+            # Only add to displayed bars if channel is 5-16
+            if i >= 4:
+                self.channel_bars.append(bar)
+            else:
+                # Hide channels 1-4 by default
+                bar_container.setVisible(False)
 
         bars_scroll = QtWidgets.QScrollArea()
         bars_scroll.setWidgetResizable(True)
         bars_scroll.setWidget(bars_widget)
         bars_scroll.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
+        self.bars_scroll = bars_scroll  # Store reference for toggling visibility
         right_panel.addWidget(bars_scroll)
 
         right_container = QtWidgets.QWidget()
@@ -299,6 +313,20 @@ class Main(QtWidgets.QWidget):
         self.jrBayStatusLabel = QtWidgets.QLabel("Disconnected")
         self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
         port_layout.addWidget(self.jrBayStatusLabel)
+
+        # Divider between JR Bay status and display mode
+        display_divider = QtWidgets.QFrame()
+        display_divider.setFrameShape(QtWidgets.QFrame.VLine)
+        display_divider.setFrameShadow(QtWidgets.QFrame.Sunken)
+        display_divider.setLineWidth(2)
+        port_layout.addWidget(display_divider)
+
+        # Display mode dropdown
+        port_layout.addWidget(QtWidgets.QLabel("Display:"))
+        self.display_mode = NoWheelComboBox()
+        self.display_mode.addItems(["Sticks and Channels", "Channels"])
+        self.display_mode.currentTextChanged.connect(self._on_display_mode_changed)
+        port_layout.addWidget(self.display_mode)
 
         port_layout.addStretch()
 
@@ -537,11 +565,12 @@ class Main(QtWidgets.QWidget):
         except Exception:
             pass
 
-        # Update progress bars for channels 5-16
+        # Update progress bars for channels 1-16
         try:
-            for i, bar in enumerate(self.channel_bars):
-                if i + 4 < len(ch):
-                    bar.setValue(ch[i + 4])
+            # Update all channel bars in real-time
+            for i, bar in enumerate(self.all_channel_bars):
+                if i < len(ch):
+                    bar.setValue(ch[i])
         except Exception:
             pass
 
@@ -700,6 +729,21 @@ class Main(QtWidgets.QWidget):
         if ports:
             self.portCombo.setCurrentIndex(0)
         self.portCombo.blockSignals(False)
+
+    def _on_display_mode_changed(self, mode):
+        """Handle display mode change between Sticks+Channels and Channels only"""
+        if mode == "Channels":
+            # Hide joystick visualizers and show all channel bars
+            self.viz_widget.setVisible(False)
+            # Show channels 1-4 in the bars
+            for i in range(4):
+                self.bar_widgets[i].setVisible(True)
+        else:  # "Sticks and Channels"
+            # Show joystick visualizers and hide first 4 channel bars
+            self.viz_widget.setVisible(True)
+            # Hide channels 1-4 from the bars
+            for i in range(4):
+                self.bar_widgets[i].setVisible(False)
 
     def _on_port_changed(self, port_display):
         """Handle COM port selection change"""
