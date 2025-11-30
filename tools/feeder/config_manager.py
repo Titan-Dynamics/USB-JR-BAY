@@ -10,7 +10,7 @@ import serial.tools.list_ports
 
 
 # Default configuration
-DEFAULT_PORT = "COM15" if sys.platform.startswith("win") else "/dev/ttyACM0"
+DEFAULT_PORT = "COM1" if sys.platform.startswith("win") else "/dev/ttyACM0"
 DEFAULT_BAUD = 5250000
 CHANNELS = 16
 

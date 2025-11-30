@@ -1,10 +1,7 @@
 name: Build
 
 on:
-  push:
-    branches:
-      - main
-      - full-overhaul
+  push:  # Run on push to any branch
     tags:
       - 'v*'  # Trigger on version tags like v1.0.0
   workflow_dispatch:  # Allows manual trigger from GitHub Actions tab
