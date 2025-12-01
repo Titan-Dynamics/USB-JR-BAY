@@ -317,7 +317,7 @@ class Main(QtWidgets.QWidget):
 
         right_container = QtWidgets.QWidget()
         right_container.setLayout(right_panel)
-        right_container.setMaximumWidth(450)
+        right_container.setMaximumWidth(350)
         content_layout.addWidget(right_container, 1)
 
         saved_mode = self.cfg.get("display_mode", "Channels")
@@ -461,6 +461,7 @@ class Main(QtWidgets.QWidget):
 
         top_bar.addWidget(self.jrBayStatusLabel)
         top_bar.addStretch()
+        top_bar.addSpacing(32)
         top_bar.addWidget(self.logging_enabled)
 
         layout.addLayout(top_bar)
