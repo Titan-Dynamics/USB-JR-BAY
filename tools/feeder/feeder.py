@@ -225,7 +225,7 @@ class Main(QtWidgets.QWidget):
             # Wrap each row in a QGroupBox with channel label as title (like link stats)
             channel_box = QtWidgets.QGroupBox(f"CH{i+1}")
             box_layout = QtWidgets.QVBoxLayout(channel_box)
-            box_layout.setContentsMargins(4, 0, 4, 0)
+            box_layout.setContentsMargins(4, 0, 4, 4)
             box_layout.addWidget(row)
 
             self.rows.append(row)
