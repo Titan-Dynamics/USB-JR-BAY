@@ -475,8 +475,8 @@ class Main(QtWidgets.QWidget):
         self.tabs.addTab(channels_tab, "Configuration")
 
         # Module Settings tab
-        module_settings = QtWidgets.QWidget()
-        config_layout = QtWidgets.QVBoxLayout(module_settings)
+        config_tab = QtWidgets.QWidget()
+        config_layout = QtWidgets.QVBoxLayout(config_tab)
         # Leave blank for now
         self.tabs.addTab(config_tab, self._module_status)  # Set initial tab title to module status
         config_tab.setMinimumSize(400, 300)
