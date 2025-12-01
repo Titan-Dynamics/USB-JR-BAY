@@ -14,7 +14,7 @@ import shutil
 from datetime import datetime
 from PyQt5 import QtWidgets, QtCore
 from PyQt5.QtGui import QIcon, QPalette, QColor, QPixmap, QPainter, QPolygon, QPen, QBrush
-from PyQt5.QtCore import QPoint, Qt
+from PyQt5.QtCore import QPoint, Qt, QSettings
 
 # Import from refactored modules
 from crsf_protocol import *
@@ -161,6 +161,10 @@ class Main(QtWidgets.QWidget):
 
         # Set dark title bar on Windows 10/11
         self._set_dark_title_bar()
+
+        # App-wide settings (separate from calibration data)
+        self.settings = QSettings("USBJRBay", "USB_JR_Bay")
+
         self.cfg = DEFAULT_CFG.copy()
         self._load_cfg()
 
@@ -249,7 +253,7 @@ class Main(QtWidgets.QWidget):
         display_row.setContentsMargins(0, 0, 0, 4)
         self.display_mode = NoWheelComboBox()
         self.display_mode.setFixedHeight(WIDGET_HEIGHT)
-        self.display_mode.addItems(["Channels", "Mode 1 sticks + channels", "Mode 2 sticks + channels"])
+        self.display_mode.addItems(["Channels", "Mode 1 Sticks + Channels", "Mode 2 Sticks + Channels"])
         self.display_mode.currentTextChanged.connect(self._on_display_mode_changed)
         display_row.addWidget(self.display_mode, 1)
         right_panel.addLayout(display_row)
@@ -321,11 +325,16 @@ class Main(QtWidgets.QWidget):
         content_layout.addWidget(right_container, 1)
 
         saved_mode = self.cfg.get("display_mode", "Channels")
-        index = self.display_mode.findText(saved_mode)
+        # Case-insensitive search for matching display mode
+        index = -1
+        for i in range(self.display_mode.count()):
+            if self.display_mode.itemText(i).lower() == saved_mode.lower():
+                index = i
+                break
         if index >= 0:
             self.display_mode.setCurrentIndex(index)
             if index == 0:
-                self._on_display_mode_changed(saved_mode)
+                self._on_display_mode_changed(self.display_mode.itemText(index))
         else:
             self._on_display_mode_changed("Channels")
 
@@ -348,15 +357,15 @@ class Main(QtWidgets.QWidget):
             lab.setStyleSheet("color: #888888;")
 
         # Collapsible log section
-        self.log_container = QtWidgets.QWidget()
-        log_layout = QtWidgets.QVBoxLayout(self.log_container)
-        log_layout.setContentsMargins(0, 4, 0, 0)  # 4px top margin for gap from link stats
-        log_layout.setSpacing(0)
+        self.console_container = QtWidgets.QWidget()
+        console_layout = QtWidgets.QVBoxLayout(self.console_container)
+        console_layout.setContentsMargins(0, 4, 0, 0)  # 4px top margin for gap from link stats
+        console_layout.setSpacing(0)
 
         # Console header (clickable to toggle)
-        self.log_header = QtWidgets.QPushButton("Console ▼")
-        self.log_header.setFlat(True)
-        self.log_header.setStyleSheet("""
+        self.console_header = QtWidgets.QPushButton("Console ▼")
+        self.console_header.setFlat(True)
+        self.console_header.setStyleSheet("""
             QPushButton {
                 text-align: left;
                 padding: 5px;
@@ -369,22 +378,22 @@ class Main(QtWidgets.QWidget):
                 background-color: #4a4a4a;
             }
         """)
-        self.log_header.setCursor(QtCore.Qt.PointingHandCursor)
-        self.log_header.clicked.connect(self._toggle_log)
-        log_layout.addWidget(self.log_header)
+        self.console_header.setCursor(QtCore.Qt.PointingHandCursor)
+        self.console_header.clicked.connect(self._toggle_console)
+        console_layout.addWidget(self.console_header)
 
         # Log (fixed height)
-        self.log = QtWidgets.QPlainTextEdit()
-        self.log.setReadOnly(True)
-        self.log.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self.log.setFixedHeight(140)
+        self.console = QtWidgets.QPlainTextEdit()
+        self.console.setReadOnly(True)
+        self.console.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.console.setFixedHeight(140)
 
-        # Restore console state from config
-        self.log_expanded = self.cfg.get("console_expanded", True)
-        self.log.setVisible(self.log_expanded)
-        self.log_header.setText("Console ▼" if self.log_expanded else "Console ▶")
+        # Restore console state from app settings
+        self.console_expanded = self.settings.value("console_expanded", True, type=bool)
+        self.console.setVisible(self.console_expanded)
+        self.console_header.setText("Console ▼" if self.console_expanded else "Console ▶")
 
-        log_layout.addWidget(self.log)
+        console_layout.addWidget(self.console)
 
         # Tabs for Channels and Configuration
         self.tabs = QtWidgets.QTabWidget()
@@ -417,7 +426,7 @@ class Main(QtWidgets.QWidget):
         self.logging_enabled = QtWidgets.QCheckBox("Logging")
         self.logging_enabled.setFixedHeight(WIDGET_HEIGHT)
         self.logging_enabled.toggled.connect(self._on_logging_toggled)
-        self.logging_enabled.setChecked(self.cfg.get("logging_enabled", False))
+        self.logging_enabled.setChecked(self.settings.value("logging_enabled", False, type=bool))
 
         self.jrBayStatusLabel = QtWidgets.QLabel("Disconnected")
         self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
@@ -474,7 +483,7 @@ class Main(QtWidgets.QWidget):
 
         layout.addWidget(self.tabs)
         layout.addLayout(tel)
-        layout.addWidget(self.log_container)
+        layout.addWidget(self.console_container)
         layout.setStretch(2, 1)
 
         self.timer = QtCore.QTimer(self)
@@ -555,7 +564,7 @@ class Main(QtWidgets.QWidget):
 
     def onDebug(self, s):
         try:
-            self.log.appendPlainText(s)
+            self.console.appendPlainText(s)
         except Exception:
             pass
 
@@ -873,17 +882,18 @@ class Main(QtWidgets.QWidget):
 
     def _on_display_mode_changed(self, mode):
         """Handle display mode change between Mode 1, Mode 2, and Channels"""
-        # Save display mode preference to config
-        self.cfg["display_mode"] = mode
+        # Save display mode preference to config as lowercase
+        self.cfg["display_mode"] = mode.lower()
         self._save_cfg_disk()
 
-        if mode == "Channels":
+        mode_lower = mode.lower()
+        if mode_lower == "channels":
             # Hide joystick visualizers and show all channel bars
             self.viz_widget.setVisible(False)
             # Show channels 1-4 in the bars
             for i in range(4):
                 self.bar_widgets[i].setVisible(True)
-        elif mode == "Mode 1 sticks + channels":
+        elif mode_lower == "mode 1 sticks + channels":
             # Show joystick visualizers and hide first 4 channel bars
             self.viz_widget.setVisible(True)
             # Hide channels 1-4 from the bars
@@ -902,7 +912,7 @@ class Main(QtWidgets.QWidget):
                 self.viz1.show()
                 self.viz2.show()
                 self.current_mode = "Mode 1"
-        elif mode == "Mode 2 sticks + channels":
+        elif mode_lower == "mode 2 sticks + channels":
             # Show joystick visualizers and hide first 4 channel bars
             self.viz_widget.setVisible(True)
             # Hide channels 1-4 from the bars
@@ -972,23 +982,21 @@ class Main(QtWidgets.QWidget):
             except Exception as e:
                 self.onDebug(f"Error scheduling Packet Rate reload: {e}")
 
-    def _toggle_log(self):
+    def _toggle_console(self):
         """Toggle console visibility"""
-        self.log_expanded = not self.log_expanded
-        self.log.setVisible(self.log_expanded)
+        self.console_expanded = not self.console_expanded
+        self.console.setVisible(self.console_expanded)
         # Update arrow indicator
-        if self.log_expanded:
-            self.log_header.setText("Console ▼")
+        if self.console_expanded:
+            self.console_header.setText("Console ▼")
         else:
-            self.log_header.setText("Console ▶")
-        # Save state to config
-        self.cfg["console_expanded"] = self.log_expanded
-        self._save_cfg_disk()
+            self.console_header.setText("Console ▶")
+        # Save state to app settings
+        self.settings.setValue("console_expanded", self.console_expanded)
 
     def _on_logging_toggled(self, checked):
         """Handle logging checkbox toggle"""
-        self.cfg["logging_enabled"] = checked
-        self._save_cfg_disk()
+        self.settings.setValue("logging_enabled", checked)
         if checked:
             # Capture start time for filename
             self.csv_start_time = datetime.now()
