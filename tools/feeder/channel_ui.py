@@ -51,7 +51,7 @@ class MultiButtonRow(QtWidgets.QWidget):
         self.is_default = is_default
 
         layout = QtWidgets.QHBoxLayout(self)
-        layout.setContentsMargins(4, 1, 4, 1)
+        layout.setContentsMargins(4, 2, 4, 2)
         layout.setSpacing(6)
 
         if is_pending:
@@ -110,7 +110,7 @@ class MultiButtonRow(QtWidgets.QWidget):
                 item.widget().deleteLater()
 
         layout = self.layout()
-        layout.setContentsMargins(4, 1, 4, 1)
+        layout.setContentsMargins(4, 2, 4, 2)
         layout.setSpacing(6)
 
         self.btn_lbl = QtWidgets.QLabel(f"Button {btn_idx}")
@@ -279,7 +279,7 @@ class MultiButtonDialog(QtWidgets.QDialog):
         scroll_widget = QtWidgets.QWidget()
         self.rows_layout = QtWidgets.QVBoxLayout(scroll_widget)
         self.rows_layout.setContentsMargins(0, 0, 0, 0)
-        self.rows_layout.setSpacing(1)
+        self.rows_layout.setSpacing(2)
 
         for btn_idx_str in self.button_map_order:
             btn_idx = int(btn_idx_str)

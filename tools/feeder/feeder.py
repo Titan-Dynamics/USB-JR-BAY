@@ -208,8 +208,8 @@ class Main(QtWidgets.QWidget):
         # Left side: All 16 channels in single column (scrollable)
         self.rows = []
         channels_layout = QtWidgets.QVBoxLayout()
-        channels_layout.setContentsMargins(0, 5, 5, 5)  # Reduce left padding
-        channels_layout.setSpacing(5)  # Space between bordered rows
+        channels_layout.setContentsMargins(0, 0, 8, 0)
+        channels_layout.setSpacing(4)
         for i in range(CHANNELS):
             row = ChannelRow(i, self.cfg["channels"][i] if i < len(self.cfg["channels"]) else DEFAULT_CFG["channels"][0])
             row.changed.connect(self.save_cfg)
@@ -225,7 +225,7 @@ class Main(QtWidgets.QWidget):
             # Wrap each row in a QGroupBox with channel label as title (like link stats)
             channel_box = QtWidgets.QGroupBox(f"CH{i+1}")
             box_layout = QtWidgets.QVBoxLayout(channel_box)
-            box_layout.setContentsMargins(5, 5, 10, 5)  # Extra right padding for scrollbar
+            box_layout.setContentsMargins(4, 0, 4, 0)
             box_layout.addWidget(row)
 
             self.rows.append(row)
@@ -241,7 +241,7 @@ class Main(QtWidgets.QWidget):
         content_layout.addWidget(ch_scroll, 2)  # Give channels more space
 
         right_panel = QtWidgets.QVBoxLayout()
-        right_panel.setContentsMargins(5, 0, 5, 0)
+        right_panel.setContentsMargins(4, 0, 4, 0)
         right_panel.setSpacing(2)
 
         WIDGET_HEIGHT = 26
@@ -255,7 +255,7 @@ class Main(QtWidgets.QWidget):
         right_panel.addLayout(display_row)
 
         self.viz_layout = QtWidgets.QHBoxLayout()
-        self.viz_layout.setSpacing(5)
+        self.viz_layout.setSpacing(4)
         self.viz_layout.setContentsMargins(0, 0, 0, 0)
 
         # Mode 1: Left stick = Rudder/Elevator, Right stick = Aileron/Throttle
@@ -281,7 +281,7 @@ class Main(QtWidgets.QWidget):
         # Channel bars (5-16, or 1-16 in Channels mode)
         bars_widget = QtWidgets.QWidget()
         bars_layout = QtWidgets.QVBoxLayout(bars_widget)
-        bars_layout.setSpacing(1)
+        bars_layout.setSpacing(2)
         bars_layout.setContentsMargins(0, 0, 0, 0)
         self.channel_bars = []
         self.all_channel_bars = []
@@ -289,7 +289,7 @@ class Main(QtWidgets.QWidget):
         for i in range(CHANNELS):
             bar_container = QtWidgets.QWidget()
             bar_layout = QtWidgets.QHBoxLayout(bar_container)
-            bar_layout.setSpacing(3)
+            bar_layout.setSpacing(4)
             bar_layout.setContentsMargins(0, 0, 0, 0)
             label = QtWidgets.QLabel(f"{i+1}")
             label.setMinimumWidth(20)
@@ -440,7 +440,7 @@ class Main(QtWidgets.QWidget):
         self.tabs.setCurrentIndex(0)
         self.tabs.setTabEnabled(1, False)
         top_bar = QtWidgets.QHBoxLayout()
-        top_bar.setContentsMargins(0, 5, 0, 5)
+        top_bar.setContentsMargins(0, 4, 0, 4)
         top_bar.addWidget(self.joyStatusLabel)
 
         divider1 = QtWidgets.QFrame()
