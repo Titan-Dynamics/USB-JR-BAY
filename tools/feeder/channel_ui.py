@@ -21,6 +21,22 @@ class NoWheelComboBox(QtWidgets.QComboBox):
         event.ignore()
 
 
+class NoWheelSpinBox(QtWidgets.QSpinBox):
+    """QSpinBox that ignores mouse wheel events."""
+
+    def wheelEvent(self, event):
+        """Ignore wheel events to prevent accidental value changes."""
+        event.ignore()
+
+
+class NoWheelDoubleSpinBox(QtWidgets.QDoubleSpinBox):
+    """QDoubleSpinBox that ignores mouse wheel events."""
+
+    def wheelEvent(self, event):
+        """Ignore wheel events to prevent accidental value changes."""
+        event.ignore()
+
+
 class MultiButtonRow(QtWidgets.QWidget):
     """A row for displaying and configuring a multi-button mapping."""
 
@@ -61,7 +77,7 @@ class MultiButtonRow(QtWidgets.QWidget):
             layout.addWidget(self.default_chk)
 
             # Output value
-            self.val_box = QtWidgets.QSpinBox()
+            self.val_box = NoWheelSpinBox()
             self.val_box.setRange(min_val, max_val)
             self.val_box.setValue(output_val)
             self.val_box.setMaximumWidth(65)
@@ -120,7 +136,7 @@ class MultiButtonRow(QtWidgets.QWidget):
         layout.addWidget(self.default_chk)
 
         # Output value
-        self.val_box = QtWidgets.QSpinBox()
+        self.val_box = NoWheelSpinBox()
         self.val_box.setRange(self.min_val, self.max_val)
         self.val_box.setValue(output_val)
         self.val_box.setMaximumWidth(65)
@@ -557,7 +573,7 @@ class ChannelRow(QtWidgets.QWidget):
         self.src.setFixedHeight(WIDGET_HEIGHT)
         self.src.setCurrentText(cfg.get("src", "none"))
 
-        self.idxBox = QtWidgets.QSpinBox()
+        self.idxBox = NoWheelSpinBox()
         self.idxBox.setRange(0, 63)
         self.idxBox.setValue(cfg.get("idx", 0))
         self.idxBox.setMaximumWidth(60)
@@ -567,7 +583,7 @@ class ChannelRow(QtWidgets.QWidget):
         self.expoLbl.setMaximumWidth(40)
         self.expoLbl.setFixedHeight(WIDGET_HEIGHT)
 
-        self.expoBox = QtWidgets.QDoubleSpinBox()
+        self.expoBox = NoWheelDoubleSpinBox()
         self.expoBox.setRange(1.0, 5.0)
         self.expoBox.setSingleStep(0.1)
         self.expoBox.setValue(cfg.get("expo", 1.0))
@@ -606,28 +622,28 @@ class ChannelRow(QtWidgets.QWidget):
         self.rotaryBox.setMaximumWidth(80)
         self.rotaryBox.setFixedHeight(WIDGET_HEIGHT)
 
-        self.rotaryStopsBox = QtWidgets.QSpinBox()
+        self.rotaryStopsBox = NoWheelSpinBox()
         self.rotaryStopsBox.setRange(3, 6)
         self.rotaryStopsBox.setValue(cfg.get("rotary_stops", 3))
         self.rotaryStopsBox.setMaximumWidth(60)
         self.rotaryStopsBox.setFixedHeight(WIDGET_HEIGHT)
         self.rotaryStopsBox.setEnabled(cfg.get("rotary", False))
 
-        self.minBox = QtWidgets.QSpinBox()
+        self.minBox = NoWheelSpinBox()
         self.minBox.setRange(0, 2000)
         self.minBox.setValue(cfg.get("min", 1000))
         self.minBox.setAlignment(QtCore.Qt.AlignLeft)
         self.minBox.setMaximumWidth(70)
         self.minBox.setFixedHeight(WIDGET_HEIGHT)
 
-        self.midBox = QtWidgets.QSpinBox()
+        self.midBox = NoWheelSpinBox()
         self.midBox.setRange(0, 2000)
         self.midBox.setValue(cfg.get("center", 1500))
         self.midBox.setAlignment(QtCore.Qt.AlignLeft)
         self.midBox.setMaximumWidth(70)
         self.midBox.setFixedHeight(WIDGET_HEIGHT)
 
-        self.maxBox = QtWidgets.QSpinBox()
+        self.maxBox = NoWheelSpinBox()
         self.maxBox.setRange(0, 2000)
         self.maxBox.setValue(cfg.get("max", 2000))
         self.maxBox.setAlignment(QtCore.Qt.AlignLeft)

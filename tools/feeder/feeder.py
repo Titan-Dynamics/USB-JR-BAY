@@ -58,6 +58,22 @@ class NoWheelComboBox(QtWidgets.QComboBox):
         event.ignore()
 
 
+class NoWheelSpinBox(QtWidgets.QSpinBox):
+    """QSpinBox that ignores mouse wheel events."""
+
+    def wheelEvent(self, event):
+        """Ignore wheel events to prevent accidental value changes."""
+        event.ignore()
+
+
+class NoWheelDoubleSpinBox(QtWidgets.QDoubleSpinBox):
+    """QDoubleSpinBox that ignores mouse wheel events."""
+
+    def wheelEvent(self, event):
+        """Ignore wheel events to prevent accidental value changes."""
+        event.ignore()
+
+
 class JoystickVisualizer(QtWidgets.QWidget):
     """Visual joystick position indicator"""
     def __init__(self, h_channel=1, v_channel=2):
