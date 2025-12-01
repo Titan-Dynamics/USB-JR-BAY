@@ -47,36 +47,31 @@ class MultiButtonRow(QtWidgets.QWidget):
         self.min_val = min_val
         self.max_val = max_val
         self.parent_dialog = parent_dialog
-        self.is_pending = is_pending  # True if waiting for button press
-        self.is_default = is_default  # True if this is the default button
+        self.is_pending = is_pending
+        self.is_default = is_default
 
         layout = QtWidgets.QHBoxLayout(self)
         layout.setContentsMargins(4, 1, 4, 1)
         layout.setSpacing(6)
 
         if is_pending:
-            # Pending state: waiting for button press
             self.status_lbl = QtWidgets.QLabel("Press a button to map...")
             self.status_lbl.setStyleSheet("color: #888888; font-style: italic;")
             layout.addWidget(self.status_lbl)
             layout.addStretch()
         else:
-            # Configured state: show button number and value
             self.btn_lbl = QtWidgets.QLabel(f"Button {btn_idx}")
             self.btn_lbl.setFixedHeight(22)
             layout.addWidget(self.btn_lbl)
 
-            # Stretch to push value and X to the right
             layout.addStretch()
 
-            # Default checkbox
             self.default_chk = QtWidgets.QCheckBox("Default")
             self.default_chk.setChecked(is_default)
             self.default_chk.setFixedHeight(22)
             self.default_chk.toggled.connect(self._on_default_toggled)
             layout.addWidget(self.default_chk)
 
-            # Output value
             self.val_box = NoWheelSpinBox()
             self.val_box.setRange(min_val, max_val)
             self.val_box.setValue(output_val)
@@ -84,7 +79,6 @@ class MultiButtonRow(QtWidgets.QWidget):
             self.val_box.setFixedHeight(22)
             layout.addWidget(self.val_box)
 
-            # Remove button (elegant X)
             self.remove_btn = QtWidgets.QPushButton("✕")
             self.remove_btn.setFixedWidth(18)
             self.remove_btn.setFixedHeight(22)
@@ -110,7 +104,6 @@ class MultiButtonRow(QtWidgets.QWidget):
         self.output_val = output_val
         self.is_pending = False
 
-        # Clear layout
         while self.layout().count():
             item = self.layout().takeAt(0)
             if item.widget():
@@ -120,22 +113,18 @@ class MultiButtonRow(QtWidgets.QWidget):
         layout.setContentsMargins(4, 1, 4, 1)
         layout.setSpacing(6)
 
-        # Button label
         self.btn_lbl = QtWidgets.QLabel(f"Button {btn_idx}")
         self.btn_lbl.setFixedHeight(22)
         layout.addWidget(self.btn_lbl)
 
-        # Stretch to push value and X to the right
         layout.addStretch()
 
-        # Default checkbox
         self.default_chk = QtWidgets.QCheckBox("Default")
         self.default_chk.setChecked(self.is_default)
         self.default_chk.setFixedHeight(22)
         self.default_chk.toggled.connect(self._on_default_toggled)
         layout.addWidget(self.default_chk)
 
-        # Output value
         self.val_box = NoWheelSpinBox()
         self.val_box.setRange(self.min_val, self.max_val)
         self.val_box.setValue(output_val)
@@ -143,7 +132,6 @@ class MultiButtonRow(QtWidgets.QWidget):
         self.val_box.setFixedHeight(22)
         layout.addWidget(self.val_box)
 
-        # Remove button
         self.remove_btn = QtWidgets.QPushButton("✕")
         self.remove_btn.setFixedWidth(18)
         self.remove_btn.setFixedHeight(22)
@@ -185,28 +173,24 @@ class MultiButtonDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle("Multi-Button Config")
         self.setModal(True)
-        # Remove question mark icon from title bar
         self.setWindowFlags(self.windowFlags() & ~QtCore.Qt.WindowContextHelpButtonHint)
-        self.resize(250, 245)  # Compact width, reduced height (225 + 25px)
+        self.resize(250, 245)
         self.button_map = button_map.copy() if button_map else {}
-        self.button_map_order = [k for k in self.button_map.keys() if k != "__default_btn__"]  # Preserve insertion order, exclude metadata
-        self.default_btn_idx = self.button_map.get("__default_btn__", None)  # Extract default button index
+        self.button_map_order = [k for k in self.button_map.keys() if k != "__default_btn__"]
+        self.default_btn_idx = self.button_map.get("__default_btn__", None)
         self.min_val = min_val
         self.max_val = max_val
         self.parent_channel = parent
-        self._mapping_row = None  # Track which row is being mapped (pending row)
-        self._mapping_started_at = 0.0  # Track when mapping started for timeout
-        self._button_rows = []  # List of MultiButtonRow widgets
-        self._last_button_press_states = {}  # Track last button press state for each button
-        # Apply dark theme
+        self._mapping_row = None
+        self._mapping_started_at = 0.0
+        self._button_rows = []
+        self._last_button_press_states = {}
         self.setStyleSheet(self._get_dark_stylesheet())
         self._init_ui()
-        # Set dark title bar on Windows
         self._set_dark_title_bar()
-        # Start timer to detect button presses
         self._update_timer = QtCore.QTimer()
         self._update_timer.timeout.connect(self._check_button_press)
-        self._update_timer.start(50)  # Check every 50ms
+        self._update_timer.start(50)
 
     def _get_dark_stylesheet(self):
         """Get dark theme stylesheet for this dialog."""
@@ -289,7 +273,6 @@ class MultiButtonDialog(QtWidgets.QDialog):
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(4)
 
-        # Scrollable area for button rows
         scroll_area = QtWidgets.QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setStyleSheet("QScrollArea { border: none; }")
@@ -298,26 +281,22 @@ class MultiButtonDialog(QtWidgets.QDialog):
         self.rows_layout.setContentsMargins(0, 0, 0, 0)
         self.rows_layout.setSpacing(1)
 
-        # Populate with existing mappings (in order)
         for btn_idx_str in self.button_map_order:
             btn_idx = int(btn_idx_str)
             val = self.button_map[btn_idx_str]
             self._add_row(btn_idx, val)
 
-        self.rows_layout.addStretch()  # Push rows to top
+        self.rows_layout.addStretch()
         scroll_area.setWidget(scroll_widget)
-        layout.addWidget(scroll_area, 1)  # Give scroll area most space
+        layout.addWidget(scroll_area, 1)
 
-        # Add button
         add_btn = QtWidgets.QPushButton("Add Button")
         add_btn.setMaximumHeight(24)
         add_btn.clicked.connect(self._add_button)
         layout.addWidget(add_btn)
 
-        # Add vertical padding between Add Button and Save/Cancel (same as horizontal gap between buttons)
         layout.addSpacing(4)
 
-        # Dialog buttons in a horizontal layout taking full width
         buttons_layout = QtWidgets.QHBoxLayout()
         buttons_layout.setContentsMargins(0, 0, 0, 0)
         buttons_layout.setSpacing(4)
@@ -341,22 +320,18 @@ class MultiButtonDialog(QtWidgets.QDialog):
         row = MultiButtonRow(btn_idx, val, self.min_val, self.max_val, self, is_pending=False, is_default=is_default)
         row.remove_btn.clicked.connect(lambda: self._on_remove_row(row))
         self._button_rows.append(row)
-        # Insert before the stretch
         self.rows_layout.insertWidget(len(self._button_rows) - 1, row)
 
     def _add_button(self):
         """Add a pending button mapping row waiting for button press."""
-        # Get list of already mapped buttons
         mapped_buttons = set()
         for row in self._button_rows:
             if not row.is_pending:
                 mapped_buttons.add(row.btn_idx)
 
-        # Check if there's already a pending row
         if self._mapping_row is not None:
-            return  # Already adding a button
+            return
 
-        # Calculate default output value based on number of mapped buttons
         num_mapped = len(mapped_buttons)
         default_values = [1200, 1320, 1440, 1560, 1680, 1800]
         if num_mapped < len(default_values):
@@ -364,26 +339,21 @@ class MultiButtonDialog(QtWidgets.QDialog):
         else:
             default_val = 1800
 
-        # Auto-set first button as default if no default exists yet
         is_first_button = (num_mapped == 0)
         if is_first_button and self.default_btn_idx is None:
-            self.default_btn_idx = None  # Will be set when button is mapped
+            self.default_btn_idx = None
 
-        # Create a pending row with calculated default value
         row = MultiButtonRow(0, default_val, self.min_val, self.max_val, self, is_pending=True)
         self._button_rows.append(row)
-        self._mapping_row = row  # Mark as the row to be mapped
-        self._mapping_started_at = time.time()  # Start timeout timer
-        # Insert before the stretch
+        self._mapping_row = row
+        self._mapping_started_at = time.time()
         self.rows_layout.insertWidget(len(self._button_rows) - 1, row)
 
     def _on_remove_row(self, row):
         """Remove a row from the list."""
         if row in self._button_rows:
-            # If removing the default button, make the first remaining button the default
             if row.is_default and row.btn_idx == self.default_btn_idx:
                 self.default_btn_idx = None
-                # Find and set the first non-pending button as default
                 for r in self._button_rows:
                     if r != row and not r.is_pending:
                         self.default_btn_idx = r.btn_idx
@@ -404,15 +374,11 @@ class MultiButtonDialog(QtWidgets.QDialog):
         if self._mapping_row is None or not self.parent_channel:
             return
 
-        # Check for timeout (5 seconds)
         if time.time() - self._mapping_started_at > 5.0:
             self._on_remove_row(self._mapping_row)
             return
 
-        # Try to get button states from parent
         try:
-            # The parent channel needs to provide button states
-            # For now, we'll rely on the mapping system to tell us
             pass
         except Exception:
             pass
@@ -420,24 +386,19 @@ class MultiButtonDialog(QtWidgets.QDialog):
     def set_mapped_button(self, btn_idx):
         """Called by parent channel when a button is mapped (for pending row)."""
         if self._mapping_row is not None:
-            # Check if this button is already mapped
             for row in self._button_rows:
                 if not row.is_pending and row.btn_idx == btn_idx:
-                    # Button already mapped, cancel the pending row
                     self._on_remove_row(self._mapping_row)
                     return
 
-            # Convert pending row to configured row with its calculated output value
             output_val = self._mapping_row.output_val
 
-            # Auto-set first button as default
             is_first_button = (len([r for r in self._button_rows if not r.is_pending]) == 0)
             if is_first_button and self.default_btn_idx is None:
                 self.default_btn_idx = btn_idx
 
             self._mapping_row.finalize_with_button(btn_idx, output_val)
 
-            # Set default checkbox if this is the default button
             if btn_idx == self.default_btn_idx:
                 self._mapping_row.default_chk.blockSignals(True)
                 self._mapping_row.default_chk.setChecked(True)
@@ -452,11 +413,9 @@ class MultiButtonDialog(QtWidgets.QDialog):
         Args:
             button_states: List of button states (0 or 1 for each button index)
         """
-        # Clear all highlighting
         for row in self._button_rows:
             row.set_highlighted(False)
 
-        # Highlight row if its button is currently pressed
         for row in self._button_rows:
             if not row.is_pending and row.btn_idx < len(button_states):
                 if button_states[row.btn_idx] == 1:
@@ -465,14 +424,12 @@ class MultiButtonDialog(QtWidgets.QDialog):
     def get_button_map(self):
         """Get the button map from the dialog."""
         button_map = {}
-        # Preserve insertion order, skip pending rows
         for row in self._button_rows:
             cfg = row.get_config()
             if cfg is not None:
                 btn_idx_str, val = cfg
                 button_map[btn_idx_str] = val
 
-        # Store the default button index if it exists
         if self.default_btn_idx is not None:
             button_map["__default_btn__"] = self.default_btn_idx
 
@@ -506,7 +463,6 @@ def map_axis_to_range(val, inv, mn, ct, mx, expo=1.0):
     if inv:
         v = -v
 
-    # Clamp to [-1, 1]
     v = max(-1.0, min(1.0, v))
 
     # Snap if close to full deflection — prevents off-by-one errors
@@ -514,13 +470,10 @@ def map_axis_to_range(val, inv, mn, ct, mx, expo=1.0):
     if abs(abs(v) - 1.0) < EPS:
         v = math.copysign(1.0, v)
 
-    # Apply exponential curve - symmetric for positive and negative
     if expo != 1.0 and v != 0.0:
-        # Preserve sign and apply exponential to absolute value
         sign = 1.0 if v >= 0.0 else -1.0
         v = sign * (abs(v) ** expo)
 
-    # Piecewise linear mapping around the center
     if v >= 0:
         outf = ct + v * (mx - ct)
     else:
@@ -549,10 +502,8 @@ class ChannelRow(QtWidgets.QWidget):
         layout = QtWidgets.QGridLayout(self)
         name = f"CH{idx + 1}"
 
-        # Widget height constant
         WIDGET_HEIGHT = 26
 
-        # Widgets
         self.nameBox = QtWidgets.QLineEdit()
         self.nameBox.setPlaceholderText("Name")
         self.nameBox.setFixedHeight(WIDGET_HEIGHT)
@@ -601,13 +552,11 @@ class ChannelRow(QtWidgets.QWidget):
         self.toggleBox.setFixedHeight(WIDGET_HEIGHT)
 
         self.toggleGroupBox = NoWheelComboBox()
-        self.toggleGroupBox.addItem("None")  # Index 0 = None (stored as -1)
-        for i in range(1, 9):  # Groups 1-8 (indices 1-8, stored as 0-7)
+        self.toggleGroupBox.addItem("None")
+        for i in range(1, 9):
             self.toggleGroupBox.addItem(f"Group {i}")
         # Toggle groups: stored as -1 for None, 0-7 for Groups 1-8
-        # Default is None (-1)
         saved_group = cfg.get("toggle_group", -1)
-        # Convert saved value to dropdown index: -1 -> 0, 0 -> 1, 1 -> 2, etc.
         if saved_group == -1:
             dropdown_index = 0
         else:
@@ -668,7 +617,6 @@ class ChannelRow(QtWidgets.QWidget):
         self.maxBox.valueChanged.connect(update_bar_range)
         update_bar_range()
 
-        # Top row: Name, Axis, IDX, Map/Configure, %, 1500
         topLayout = QtWidgets.QHBoxLayout()
         topLayout.addWidget(self.nameBox)
         topLayout.addWidget(self.src)
@@ -679,11 +627,9 @@ class ChannelRow(QtWidgets.QWidget):
         topLayout.addWidget(self.idxBox)
         topLayout.addWidget(self.mapBtn)
         topLayout.addWidget(self.multiButtonBtn)
-        topLayout.addWidget(self.bar, 1)  # progress bar gets stretch
+        topLayout.addWidget(self.bar, 1)
         topLayout.addWidget(self.val)
         layout.addLayout(topLayout, 0, 0, 1, 15)
-
-        # Bottom row: Min, Mid, Max, Toggle, Toggle Group, Rotary, Rotary Stops, Reverse
         self.minLbl = QtWidgets.QLabel("Min")
         self.minLbl.setMaximumWidth(30)
         self.minLbl.setFixedHeight(WIDGET_HEIGHT)
@@ -707,10 +653,7 @@ class ChannelRow(QtWidgets.QWidget):
         layout.addWidget(self.expoLbl, 1, 11)
         layout.addWidget(self.expoBox, 1, 12)
 
-        # Add spacer to prevent bottom row from stretching
-        layout.setColumnStretch(13, 1)  # Column 13 absorbs extra space
-
-        # Connect signals
+        layout.setColumnStretch(13, 1)
         self.nameBox.textChanged.connect(self.changed.emit)
         self.src.currentIndexChanged.connect(self._update_visual_state)
         self.rotaryBox.toggled.connect(self._update_visual_state)
@@ -733,25 +676,22 @@ class ChannelRow(QtWidgets.QWidget):
         self.mapBtn.clicked.connect(self._on_map)
         self.multiButtonBtn.clicked.connect(self._on_configure_multibutton)
 
-        # Initial visual state
         self._update_visual_state()
 
-        # Button state tracking
         self._btn_last = 0
         self._btn_toggle_state = 0
         self._btn_rotary_state = 0
         self._prev_btn_idx = self.idxBox.value()
-        self._toggle_activated_time = 0  # Track when toggle was last activated
-        self._multi_button_map = cfg.get("multi_button_map", {})  # Multi-button mapping
-        self._multi_button_default_idx = self._multi_button_map.get("__default_btn__", None)  # Default button index
-        self._multi_button_last_states = {}  # Track last state of each multi-button
-        # Initialize current value to default button's value if available
+        self._toggle_activated_time = 0
+        self._multi_button_map = cfg.get("multi_button_map", {})
+        self._multi_button_default_idx = self._multi_button_map.get("__default_btn__", None)
+        self._multi_button_last_states = {}
         if self._multi_button_default_idx is not None:
             default_idx_str = str(self._multi_button_default_idx)
             self._multi_button_current_value = self._multi_button_map.get(default_idx_str, None)
         else:
             self._multi_button_current_value = None
-        self._active_multibutton_dialog = None  # Reference to active dialog for mapping
+        self._active_multibutton_dialog = None
 
     def _on_map(self):
         """Handle map button click."""

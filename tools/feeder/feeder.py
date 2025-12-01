@@ -106,19 +106,17 @@ class JoystickVisualizer(QtWidgets.QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        # Get widget dimensions
         width = self.width()
         height = self.height()
-        size = min(width, height) - 35  # Space for labels (left + bottom)
-        offset_x = (width - size) // 2 + 8  # Small offset for left label
-        offset_y = (height - size) // 2  # Center vertically
+        size = min(width, height) - 35
+        offset_x = (width - size) // 2 + 8
+        offset_y = (height - size) // 2
 
-        # Draw outer square (dead zone indicator)
+        # Dead zone indicator
         painter.setPen(QPen(QColor("#555555"), 2))
         painter.setBrush(QBrush(QColor("#2b2b2b")))
         painter.drawRoundedRect(offset_x, offset_y, size, size, 8, 8)
 
-        # Draw center crosshair
         painter.setPen(QPen(QColor("#666666"), 1))
         center_x = offset_x + size // 2
         center_y = offset_y + size // 2
@@ -126,9 +124,7 @@ class JoystickVisualizer(QtWidgets.QWidget):
         painter.drawLine(center_x - crosshair_extent, center_y, center_x + crosshair_extent, center_y)
         painter.drawLine(center_x, center_y - crosshair_extent, center_x, center_y + crosshair_extent)
 
-        # Draw stick position indicator if at least one channel is mapped
         if self.h_mapped or self.v_mapped:
-            # Calculate stick position (1000-2000 maps to 0-size)
             # Invert vertical axis (lower value = higher on screen)
             center_stick_x = offset_x + size // 2
             center_stick_y = offset_y + size // 2
@@ -137,25 +133,19 @@ class JoystickVisualizer(QtWidgets.QWidget):
             stick_x = offset_x + int((self.h_value - 1000) / 1000.0 * size) if self.h_mapped else center_stick_x
             stick_y = offset_y + int((2000 - self.v_value) / 1000.0 * size) if self.v_mapped else center_stick_y
 
-            # Clamp to bounds
             stick_x = max(offset_x, min(offset_x + size, stick_x))
             stick_y = max(offset_y, min(offset_y + size, stick_y))
 
-            # Draw circle for any mapped channel(s)
             painter.setPen(QPen(QColor("#1e88e5"), 2))
             painter.setBrush(QBrush(QColor("#1e88e5")))
             painter.drawEllipse(stick_x - 8, stick_y - 8, 16, 16)
 
-        # Draw channel labels
         painter.setPen(QPen(QColor("#e0e0e0")))
         font = painter.font()
         font.setPointSize(8)
         painter.setFont(font)
 
-        # Left label (vertical channel)
         painter.drawText(0, offset_y, offset_x - 5, size, Qt.AlignRight | Qt.AlignVCenter, f"{self.v_channel}")
-
-        # Bottom label (horizontal channel)
         painter.drawText(offset_x, offset_y + size + 5, size, 20, Qt.AlignHCenter | Qt.AlignTop, f"{self.h_channel}")
 
 
@@ -250,36 +240,33 @@ class Main(QtWidgets.QWidget):
         ch_scroll.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         content_layout.addWidget(ch_scroll, 2)  # Give channels more space
 
-        # Right side: Joystick visualizers and channel indicators
         right_panel = QtWidgets.QVBoxLayout()
-        right_panel.setContentsMargins(5, 0, 5, 0)  # Reduce vertical padding (left, top, right, bottom)
-        right_panel.setSpacing(2)  # Reduce spacing between visualizers and bars
+        right_panel.setContentsMargins(5, 0, 5, 0)
+        right_panel.setSpacing(2)
 
-        # Display mode dropdown at top of right panel
-        WIDGET_HEIGHT = 26  # Match channel row widget height
+        WIDGET_HEIGHT = 26
         display_row = QtWidgets.QHBoxLayout()
-        display_row.setContentsMargins(0, 0, 0, 4)  # Add 4px bottom margin
+        display_row.setContentsMargins(0, 0, 0, 4)
         self.display_mode = NoWheelComboBox()
         self.display_mode.setFixedHeight(WIDGET_HEIGHT)
         self.display_mode.addItems(["Channels", "Mode 1 sticks + channels", "Mode 2 sticks + channels"])
         self.display_mode.currentTextChanged.connect(self._on_display_mode_changed)
-        display_row.addWidget(self.display_mode, 1)  # Stretch factor 1 to take full width
+        display_row.addWidget(self.display_mode, 1)
         right_panel.addLayout(display_row)
 
-        # Joystick visualizers (hidden when "Channels" mode)
         self.viz_layout = QtWidgets.QHBoxLayout()
-        self.viz_layout.setSpacing(5)  # Reduce spacing between visualizers
-        self.viz_layout.setContentsMargins(0, 0, 0, 0)  # No margins
+        self.viz_layout.setSpacing(5)
+        self.viz_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Mode 1 visualizers: Left stick = Rudder/Elevator, Right stick = Aileron/Throttle
-        self.viz1_mode1 = JoystickVisualizer(h_channel=4, v_channel=2)  # CH4 horiz, CH2 vert
-        self.viz2_mode1 = JoystickVisualizer(h_channel=1, v_channel=3)  # CH1 horiz, CH3 vert
+        # Mode 1: Left stick = Rudder/Elevator, Right stick = Aileron/Throttle
+        self.viz1_mode1 = JoystickVisualizer(h_channel=4, v_channel=2)
+        self.viz2_mode1 = JoystickVisualizer(h_channel=1, v_channel=3)
 
-        # Mode 2 visualizers: Left stick = Rudder/Throttle, Right stick = Aileron/Elevator
-        self.viz1_mode2 = JoystickVisualizer(h_channel=4, v_channel=3)  # CH4 horiz, CH3 vert
-        self.viz2_mode2 = JoystickVisualizer(h_channel=1, v_channel=2)  # CH1 horiz, CH2 vert
+        # Mode 2: Left stick = Rudder/Throttle, Right stick = Aileron/Elevator
+        self.viz1_mode2 = JoystickVisualizer(h_channel=4, v_channel=3)
+        self.viz2_mode2 = JoystickVisualizer(h_channel=1, v_channel=2)
 
-        # Initialize to Mode 2 by default (will be adjusted when config is loaded)
+        # Default to Mode 2 (adjusted when config loads)
         self.viz1 = self.viz1_mode2
         self.viz2 = self.viz2_mode2
         self.current_mode = "Mode 2"
@@ -289,21 +276,20 @@ class Main(QtWidgets.QWidget):
         self.viz_widget = QtWidgets.QWidget()
         self.viz_widget.setLayout(self.viz_layout)
         right_panel.addWidget(self.viz_widget)
-        # Hide visualizers by default (will be shown if needed when display mode is applied)
         self.viz_widget.setVisible(False)
 
-        # Progress bars for channels 5-16 (or 1-16 in Channels mode)
+        # Channel bars (5-16, or 1-16 in Channels mode)
         bars_widget = QtWidgets.QWidget()
         bars_layout = QtWidgets.QVBoxLayout(bars_widget)
         bars_layout.setSpacing(1)
         bars_layout.setContentsMargins(0, 0, 0, 0)
         self.channel_bars = []
-        self.all_channel_bars = []  # Store all bars including 1-4
-        self.bar_widgets = []  # Store widget containers for visibility toggling
+        self.all_channel_bars = []
+        self.bar_widgets = []
         for i in range(CHANNELS):
-            bar_container = QtWidgets.QWidget()  # Container for each bar
+            bar_container = QtWidgets.QWidget()
             bar_layout = QtWidgets.QHBoxLayout(bar_container)
-            bar_layout.setSpacing(3)  # Reduce gap between label and bar
+            bar_layout.setSpacing(3)
             bar_layout.setContentsMargins(0, 0, 0, 0)
             label = QtWidgets.QLabel(f"{i+1}")
             label.setMinimumWidth(20)
@@ -317,18 +303,16 @@ class Main(QtWidgets.QWidget):
             bars_layout.addWidget(bar_container)
             self.all_channel_bars.append(bar)
             self.bar_widgets.append(bar_container)
-            # Only add to displayed bars if channel is 5-16
             if i >= 4:
                 self.channel_bars.append(bar)
             else:
-                # Hide channels 1-4 by default
                 bar_container.setVisible(False)
 
         bars_scroll = QtWidgets.QScrollArea()
         bars_scroll.setWidgetResizable(True)
         bars_scroll.setWidget(bars_widget)
         bars_scroll.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
-        self.bars_scroll = bars_scroll  # Store reference for toggling visibility
+        self.bars_scroll = bars_scroll
         right_panel.addWidget(bars_scroll)
 
         right_container = QtWidgets.QWidget()
@@ -336,16 +320,13 @@ class Main(QtWidgets.QWidget):
         right_container.setMaximumWidth(450)
         content_layout.addWidget(right_container, 1)
 
-        # Set display mode from config (default is "Channels") and apply initial display mode
         saved_mode = self.cfg.get("display_mode", "Channels")
         index = self.display_mode.findText(saved_mode)
         if index >= 0:
             self.display_mode.setCurrentIndex(index)
-            # Ensure the handler is called even if index is 0 (since currentTextChanged might not fire)
             if index == 0:
                 self._on_display_mode_changed(saved_mode)
         else:
-            # If saved mode not found, explicitly apply default
             self._on_display_mode_changed("Channels")
 
         # Telemetry
@@ -412,19 +393,15 @@ class Main(QtWidgets.QWidget):
         channels_tab = QtWidgets.QWidget()
         channels_tab_layout = QtWidgets.QVBoxLayout(channels_tab)
 
-        # Create widgets that will be used in top bar (created here, added to top bar later)
-        WIDGET_HEIGHT = 26  # Match channel row widget height
+        WIDGET_HEIGHT = 26
 
-        # Controller status
         self.joyStatusLabel = QtWidgets.QLabel("Scanning for controller...")
         self.joyStatusLabel.setStyleSheet("color: red; font-weight: bold;")
 
-        # Serial COM controls
         self.portCombo = NoWheelComboBox()
         self.portCombo.setMinimumWidth(80)
         self.portCombo.setFixedHeight(WIDGET_HEIGHT)
         self._refresh_port_list()
-        # Set current port by finding it in the stored data
         saved_port = self.cfg["serial_port"]
         for i in range(self.portCombo.count()):
             if self.portCombo.itemData(i) == saved_port:
@@ -437,79 +414,57 @@ class Main(QtWidgets.QWidget):
         self.refreshPortBtn.setMaximumWidth(80)
         self.refreshPortBtn.setFixedHeight(WIDGET_HEIGHT)
 
-        # Logging checkbox
         self.logging_enabled = QtWidgets.QCheckBox("Logging")
         self.logging_enabled.setFixedHeight(WIDGET_HEIGHT)
         self.logging_enabled.toggled.connect(self._on_logging_toggled)
         self.logging_enabled.setChecked(self.cfg.get("logging_enabled", False))
 
-        # JR Bay status (will be added to top bar)
         self.jrBayStatusLabel = QtWidgets.QLabel("Disconnected")
         self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
 
         channels_tab_layout.addLayout(content_layout)
         self.tabs.addTab(channels_tab, "Controller")
 
-        # Module Settings tab
         config_tab = QtWidgets.QWidget()
         config_layout = QtWidgets.QVBoxLayout(config_tab)
-        # Leave blank for now
-        self.tabs.addTab(config_tab, self._module_status)  # Set initial tab title to module status
+        self.tabs.addTab(config_tab, self._module_status)
         config_tab.setMinimumSize(400, 300)
-        # Loading indicator for config tab (indeterminate progress)
         self.config_loading = QtWidgets.QProgressBar()
-        self.config_loading.setRange(0, 0)  # indeterminate
+        self.config_loading.setRange(0, 0)
         self.config_loading.setMaximumHeight(12)
         self.config_loading.setVisible(False)
-        # Add it to the config layout as the first widget (hidden by default)
         config_layout.addWidget(self.config_loading)
-        # Mapping of field id -> widget used for updating without a full re-populate
         self._config_field_widgets = {}
-        # Pending writes: fid -> (desired_value, timestamp)
         self._pending_param_writes = {}
 
-        # Set Channels as default and disable Configuration tab until module detected
         self.tabs.setCurrentIndex(0)
-        self.tabs.setTabEnabled(1, False)  # Disable Configuration tab initially
-
-        # Create top bar above tabs with controller name, COM port, and logging
+        self.tabs.setTabEnabled(1, False)
         top_bar = QtWidgets.QHBoxLayout()
         top_bar.setContentsMargins(0, 5, 0, 5)
-
-        # Controller status (will be set from port_widget creation earlier)
         top_bar.addWidget(self.joyStatusLabel)
 
-        # Divider
         divider1 = QtWidgets.QFrame()
         divider1.setFrameShape(QtWidgets.QFrame.VLine)
         divider1.setFrameShadow(QtWidgets.QFrame.Sunken)
         divider1.setLineWidth(2)
         top_bar.addWidget(divider1)
 
-        # COM port controls (will be set from widget creation earlier)
         top_bar.addWidget(QtWidgets.QLabel("ESP32 COM Port:"))
         top_bar.addWidget(self.portCombo)
         top_bar.addWidget(self.refreshPortBtn)
 
-        # Divider
         divider2 = QtWidgets.QFrame()
         divider2.setFrameShape(QtWidgets.QFrame.VLine)
         divider2.setFrameShadow(QtWidgets.QFrame.Sunken)
         divider2.setLineWidth(2)
         top_bar.addWidget(divider2)
 
-        # JR Bay connection status
         top_bar.addWidget(self.jrBayStatusLabel)
-
-        # Stretch to push logging checkbox to the right
         top_bar.addStretch()
-
-        # Logging checkbox all the way to the right
         top_bar.addWidget(self.logging_enabled)
 
         layout.addLayout(top_bar)
 
-        # Add horizontal divider under top bar
         h_divider_top = QtWidgets.QFrame()
         h_divider_top.setFrameShape(QtWidgets.QFrame.HLine)
         h_divider_top.setFrameShadow(QtWidgets.QFrame.Sunken)
@@ -517,16 +472,9 @@ class Main(QtWidgets.QWidget):
         layout.addWidget(h_divider_top)
 
         layout.addWidget(self.tabs)
-
-        # Telemetry (link stats) below the tabs
         layout.addLayout(tel)
-
-        # Collapsible log below telemetry
         layout.addWidget(self.log_container)
-
-        # Timer loop
-        # Only the tabs area should expand/contract on resize
-        layout.setStretch(2, 1)  # Index 2 is the tabs widget (0=top_bar, 1=h_divider_top, 2=tabs)
+        layout.setStretch(2, 1)
 
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
