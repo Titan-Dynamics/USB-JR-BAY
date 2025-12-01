@@ -111,7 +111,7 @@ class JoystickVisualizer(QtWidgets.QWidget):
         height = self.height()
         size = min(width, height) - 35  # Space for labels (left + bottom)
         offset_x = (width - size) // 2 + 8  # Small offset for left label
-        offset_y = 5  # Top margin, leaving room for bottom label
+        offset_y = (height - size) // 2  # Center vertically
 
         # Draw outer square (dead zone indicator)
         painter.setPen(QPen(QColor("#555555"), 2))
@@ -255,10 +255,21 @@ class Main(QtWidgets.QWidget):
         right_panel.setContentsMargins(5, 0, 5, 0)  # Reduce vertical padding (left, top, right, bottom)
         right_panel.setSpacing(2)  # Reduce spacing between visualizers and bars
 
+        # Display mode dropdown at top of right panel
+        WIDGET_HEIGHT = 26  # Match channel row widget height
+        display_row = QtWidgets.QHBoxLayout()
+        display_row.setContentsMargins(0, 0, 0, 4)  # Add 4px bottom margin
+        self.display_mode = NoWheelComboBox()
+        self.display_mode.setFixedHeight(WIDGET_HEIGHT)
+        self.display_mode.addItems(["Channels", "Mode 1 sticks + channels", "Mode 2 sticks + channels"])
+        self.display_mode.currentTextChanged.connect(self._on_display_mode_changed)
+        display_row.addWidget(self.display_mode, 1)  # Stretch factor 1 to take full width
+        right_panel.addLayout(display_row)
+
         # Joystick visualizers (hidden when "Channels" mode)
         self.viz_layout = QtWidgets.QHBoxLayout()
         self.viz_layout.setSpacing(5)  # Reduce spacing between visualizers
-        self.viz_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
+        self.viz_layout.setContentsMargins(0, 0, 0, 0)  # No margins
 
         # Mode 1 visualizers: Left stick = Rudder/Elevator, Right stick = Aileron/Throttle
         self.viz1_mode1 = JoystickVisualizer(h_channel=4, v_channel=2)  # CH4 horiz, CH2 vert
@@ -325,6 +336,18 @@ class Main(QtWidgets.QWidget):
         right_container.setMaximumWidth(450)
         content_layout.addWidget(right_container, 1)
 
+        # Set display mode from config (default is "Channels") and apply initial display mode
+        saved_mode = self.cfg.get("display_mode", "Channels")
+        index = self.display_mode.findText(saved_mode)
+        if index >= 0:
+            self.display_mode.setCurrentIndex(index)
+            # Ensure the handler is called even if index is 0 (since currentTextChanged might not fire)
+            if index == 0:
+                self._on_display_mode_changed(saved_mode)
+        else:
+            # If saved mode not found, explicitly apply default
+            self._on_display_mode_changed("Channels")
+
         # Telemetry
         tel = QtWidgets.QHBoxLayout()
         self.telLabels = {}
@@ -389,27 +412,14 @@ class Main(QtWidgets.QWidget):
         channels_tab = QtWidgets.QWidget()
         channels_tab_layout = QtWidgets.QVBoxLayout(channels_tab)
 
-        # Status bar at top of Configuration tab
-        port_widget = QtWidgets.QWidget()
-        port_layout = QtWidgets.QHBoxLayout(port_widget)
-        port_layout.setContentsMargins(0, 5, 0, 5)
+        # Create widgets that will be used in top bar (created here, added to top bar later)
+        WIDGET_HEIGHT = 26  # Match channel row widget height
 
-        # Controller status at far left
+        # Controller status
         self.joyStatusLabel = QtWidgets.QLabel("Scanning for controller...")
         self.joyStatusLabel.setStyleSheet("color: red; font-weight: bold;")
-        port_layout.addWidget(self.joyStatusLabel)
-
-        # Divider between controller status and COM controls
-        joy_divider = QtWidgets.QFrame()
-        joy_divider.setFrameShape(QtWidgets.QFrame.VLine)
-        joy_divider.setFrameShadow(QtWidgets.QFrame.Sunken)
-        joy_divider.setLineWidth(2)
-        port_layout.addWidget(joy_divider)
 
         # Serial COM controls
-        port_layout.addWidget(QtWidgets.QLabel("ESP32 COM Port:"))
-
-        WIDGET_HEIGHT = 26  # Match channel row widget height
         self.portCombo = NoWheelComboBox()
         self.portCombo.setMinimumWidth(80)
         self.portCombo.setFixedHeight(WIDGET_HEIGHT)
@@ -421,74 +431,24 @@ class Main(QtWidgets.QWidget):
                 self.portCombo.setCurrentIndex(i)
                 break
         self.portCombo.currentTextChanged.connect(self._on_port_changed)
-        port_layout.addWidget(self.portCombo)
 
         self.refreshPortBtn = QtWidgets.QPushButton("Refresh")
         self.refreshPortBtn.clicked.connect(self._refresh_port_list)
         self.refreshPortBtn.setMaximumWidth(80)
         self.refreshPortBtn.setFixedHeight(WIDGET_HEIGHT)
-        port_layout.addWidget(self.refreshPortBtn)
-
-        # JR Bay status right after the port controls
-        self.jrBayStatusLabel = QtWidgets.QLabel("Disconnected")
-        self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
-        port_layout.addWidget(self.jrBayStatusLabel)
-
-        # Divider between JR Bay status and logging
-        logging_divider = QtWidgets.QFrame()
-        logging_divider.setFrameShape(QtWidgets.QFrame.VLine)
-        logging_divider.setFrameShadow(QtWidgets.QFrame.Sunken)
-        logging_divider.setLineWidth(2)
-        port_layout.addWidget(logging_divider)
 
         # Logging checkbox
-        self.logging_enabled = QtWidgets.QCheckBox("Logging enabled")
+        self.logging_enabled = QtWidgets.QCheckBox("Logging")
         self.logging_enabled.setFixedHeight(WIDGET_HEIGHT)
         self.logging_enabled.toggled.connect(self._on_logging_toggled)
-        port_layout.addWidget(self.logging_enabled)
         self.logging_enabled.setChecked(self.cfg.get("logging_enabled", False))
 
-        # Divider between logging and display mode
-        display_divider = QtWidgets.QFrame()
-        display_divider.setFrameShape(QtWidgets.QFrame.VLine)
-        display_divider.setFrameShadow(QtWidgets.QFrame.Sunken)
-        display_divider.setLineWidth(2)
-        port_layout.addWidget(display_divider)
-
-        # Display mode dropdown
-        port_layout.addWidget(QtWidgets.QLabel("Display:"))
-        self.display_mode = NoWheelComboBox()
-        self.display_mode.setFixedHeight(WIDGET_HEIGHT)
-        self.display_mode.addItems(["Channels", "Mode 1 sticks + channels", "Mode 2 sticks + channels"])
-        self.display_mode.currentTextChanged.connect(self._on_display_mode_changed)
-        port_layout.addWidget(self.display_mode)
-
-        # Set from config (default is "Channels") and apply initial display mode
-        saved_mode = self.cfg.get("display_mode", "Channels")
-        index = self.display_mode.findText(saved_mode)
-        if index >= 0:
-            self.display_mode.setCurrentIndex(index)
-            # Ensure the handler is called even if index is 0 (since currentTextChanged might not fire)
-            if index == 0:
-                self._on_display_mode_changed(saved_mode)
-        else:
-            # If saved mode not found, explicitly apply default
-            self._on_display_mode_changed("Channels")
-
-        port_layout.addStretch()
-
-        port_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        channels_tab_layout.addWidget(port_widget)
-
-        # Horizontal divider under the port widget
-        h_divider = QtWidgets.QFrame()
-        h_divider.setFrameShape(QtWidgets.QFrame.HLine)
-        h_divider.setFrameShadow(QtWidgets.QFrame.Sunken)
-        h_divider.setLineWidth(2)
-        channels_tab_layout.addWidget(h_divider)
+        # JR Bay status (will be added to top bar)
+        self.jrBayStatusLabel = QtWidgets.QLabel("Disconnected")
+        self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
 
         channels_tab_layout.addLayout(content_layout)
-        self.tabs.addTab(channels_tab, "Configuration")
+        self.tabs.addTab(channels_tab, "Controller")
 
         # Module Settings tab
         config_tab = QtWidgets.QWidget()
@@ -512,6 +472,50 @@ class Main(QtWidgets.QWidget):
         self.tabs.setCurrentIndex(0)
         self.tabs.setTabEnabled(1, False)  # Disable Configuration tab initially
 
+        # Create top bar above tabs with controller name, COM port, and logging
+        top_bar = QtWidgets.QHBoxLayout()
+        top_bar.setContentsMargins(0, 5, 0, 5)
+
+        # Controller status (will be set from port_widget creation earlier)
+        top_bar.addWidget(self.joyStatusLabel)
+
+        # Divider
+        divider1 = QtWidgets.QFrame()
+        divider1.setFrameShape(QtWidgets.QFrame.VLine)
+        divider1.setFrameShadow(QtWidgets.QFrame.Sunken)
+        divider1.setLineWidth(2)
+        top_bar.addWidget(divider1)
+
+        # COM port controls (will be set from widget creation earlier)
+        top_bar.addWidget(QtWidgets.QLabel("ESP32 COM Port:"))
+        top_bar.addWidget(self.portCombo)
+        top_bar.addWidget(self.refreshPortBtn)
+
+        # Divider
+        divider2 = QtWidgets.QFrame()
+        divider2.setFrameShape(QtWidgets.QFrame.VLine)
+        divider2.setFrameShadow(QtWidgets.QFrame.Sunken)
+        divider2.setLineWidth(2)
+        top_bar.addWidget(divider2)
+
+        # JR Bay connection status
+        top_bar.addWidget(self.jrBayStatusLabel)
+
+        # Stretch to push logging checkbox to the right
+        top_bar.addStretch()
+
+        # Logging checkbox all the way to the right
+        top_bar.addWidget(self.logging_enabled)
+
+        layout.addLayout(top_bar)
+
+        # Add horizontal divider under top bar
+        h_divider_top = QtWidgets.QFrame()
+        h_divider_top.setFrameShape(QtWidgets.QFrame.HLine)
+        h_divider_top.setFrameShadow(QtWidgets.QFrame.Sunken)
+        h_divider_top.setLineWidth(2)
+        layout.addWidget(h_divider_top)
+
         layout.addWidget(self.tabs)
 
         # Telemetry (link stats) below the tabs
@@ -522,7 +526,7 @@ class Main(QtWidgets.QWidget):
 
         # Timer loop
         # Only the tabs area should expand/contract on resize
-        layout.setStretch(0, 1)  # Index 0 is the tabs widget
+        layout.setStretch(2, 1)  # Index 2 is the tabs widget (0=top_bar, 1=h_divider_top, 2=tabs)
 
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
