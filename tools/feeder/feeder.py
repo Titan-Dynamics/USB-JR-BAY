@@ -669,43 +669,61 @@ class Main(QtWidgets.QWidget):
 
         # Mapping mode: detect next button press or large axis move
         if self.mapping_row is not None:
-            base_axes, base_btns = self.mapping_baseline
-            detected = None
-            # Button press has priority
-            if btns and base_btns:
-                for i in range(min(len(btns), len(base_btns))):
-                    if base_btns[i] == 0 and btns[i] == 1:
-                        detected = ("button", i)
-                        break
-            # Axis movement if no button detected
-            if detected is None and axes and base_axes:
-                best_i, best_d = -1, 0.0
-                for i in range(min(len(axes), len(base_axes))):
-                    d = abs(axes[i] - base_axes[i])
-                    if d > best_d:
-                        best_d, best_i = d, i
-                if best_i >= 0 and best_d > 0.35:
-                    detected = ("axis", best_i)
+            try:
+                # Check for timeout first (5 seconds)
+                if time.time() - self.mapping_started_at > 5.0:
+                    # Timeout - reset button
+                    try:
+                        self.mapping_row.mapBtn.setText("Map")
+                        self.mapping_row.mapBtn.setEnabled(True)
+                    except Exception:
+                        pass
+                    self.onDebug("Mapping timed out; try again.")
+                    self.mapping_row = None
+                else:
+                    base_axes, base_btns = self.mapping_baseline
+                    detected = None
+                    # Button press has priority
+                    if btns and base_btns:
+                        for i in range(min(len(btns), len(base_btns))):
+                            if base_btns[i] == 0 and btns[i] == 1:
+                                detected = ("button", i)
+                                break
+                    # Axis movement if no button detected
+                    if detected is None and axes and base_axes:
+                        best_i, best_d = -1, 0.0
+                        for i in range(min(len(axes), len(base_axes))):
+                            d = abs(axes[i] - base_axes[i])
+                            if d > best_d:
+                                best_d, best_i = d, i
+                        if best_i >= 0 and best_d > 0.35:
+                            detected = ("axis", best_i)
 
-            if detected is not None:
-                src, idx = detected
-                self.mapping_row.set_mapping(src, idx)
+                    if detected is not None:
+                        src, idx = detected
+                        try:
+                            self.mapping_row.set_mapping(src, idx)
+                            self.onDebug(f"Mapped CH{self.mapping_row.idx+1} to {src}[{idx}]")
+                            self.save_cfg()
+                        except Exception as e:
+                            self.onDebug(f"Mapping save error: {e}")
+                        finally:
+                            # Always reset button, even if save fails
+                            try:
+                                self.mapping_row.mapBtn.setText("Map")
+                                self.mapping_row.mapBtn.setEnabled(True)
+                            except Exception:
+                                pass
+                            self.mapping_row = None
+            except Exception as e:
+                # If any error occurs during mapping, reset the button
+                self.onDebug(f"Mapping error: {e}")
                 try:
-                    self.mapping_row.mapBtn.setText("Map")
-                    self.mapping_row.mapBtn.setEnabled(True)
+                    if self.mapping_row is not None:
+                        self.mapping_row.mapBtn.setText("Map")
+                        self.mapping_row.mapBtn.setEnabled(True)
                 except Exception:
                     pass
-                self.onDebug(f"Mapped CH{self.mapping_row.idx+1} to {src}[{idx}]")
-                self.mapping_row = None
-                self.save_cfg()
-            elif time.time() - self.mapping_started_at > 5.0:
-                # Timeout after 5 seconds
-                try:
-                    self.mapping_row.mapBtn.setText("Map")
-                    self.mapping_row.mapBtn.setEnabled(True)
-                except Exception:
-                    pass
-                self.onDebug("Mapping timed out; try again.")
                 self.mapping_row = None
 
         ch = [r.compute(axes, btns) for r in self.rows]
@@ -1047,22 +1065,45 @@ class Main(QtWidgets.QWidget):
 
     # --- Mapping helpers ---
     def begin_mapping(self, row: ChannelRow):
-        # If another mapping is active, cancel it visually
-        if self.mapping_row is not None and hasattr(self.mapping_row, "mapBtn"):
+        try:
+            # If another mapping is active, cancel it visually
+            if self.mapping_row is not None and hasattr(self.mapping_row, "mapBtn"):
+                try:
+                    self.mapping_row.mapBtn.setText("Map")
+                    self.mapping_row.mapBtn.setEnabled(True)
+                except Exception:
+                    pass
+
+            # Verify joystick is connected before starting mapping
+            if self.joy.j is None:
+                self.onDebug("No joystick connected. Cannot map channel.")
+                return
+
+            # Read baseline joystick state
+            axes, btns = self.joy.read()
+            if axes is None and btns is None:
+                self.onDebug("Cannot read joystick state. Cannot map channel.")
+                return
+
+            self.mapping_row = row
+            self.mapping_baseline = (axes, btns)
+            self.mapping_started_at = time.time()
             try:
-                self.mapping_row.mapBtn.setText("Map")
-                self.mapping_row.mapBtn.setEnabled(True)
+                row.mapBtn.setText("...")
+                row.mapBtn.setEnabled(False)
             except Exception:
                 pass
-        self.mapping_row = row
-        self.mapping_baseline = self.joy.read()
-        self.mapping_started_at = time.time()
-        try:
-            row.mapBtn.setText("...")
-            row.mapBtn.setEnabled(False)
-        except Exception:
-            pass
-        self.onDebug(f"Move an axis or press a button to map CH{row.idx+1} …")
+            self.onDebug(f"Move an axis or press a button to map CH{row.idx+1} …")
+        except Exception as e:
+            self.onDebug(f"Error starting mapping: {e}")
+            # Reset button if anything goes wrong
+            try:
+                if row and hasattr(row, "mapBtn"):
+                    row.mapBtn.setText("Map")
+                    row.mapBtn.setEnabled(True)
+            except Exception:
+                pass
+            self.mapping_row = None
 
     def _setup_csv_logging(self):
         """Initialize CSV logging with link stats and channel outputs"""
