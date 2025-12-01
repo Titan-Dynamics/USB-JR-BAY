@@ -408,7 +408,7 @@ class Main(QtWidgets.QWidget):
         self.joyStatusLabel.setStyleSheet("color: red; font-weight: bold;")
 
         self.portCombo = NoWheelComboBox()
-        self.portCombo.setMinimumWidth(80)
+        self.portCombo.setMinimumWidth(180)
         self.portCombo.setFixedHeight(WIDGET_HEIGHT)
         self._refresh_port_list()
         saved_port = self.cfg["serial_port"]
@@ -542,6 +542,17 @@ class Main(QtWidgets.QWidget):
                 self.jrBayStatusLabel.setStyleSheet("color: white; font-weight: bold;")
                 # Disable refresh button while connected to prevent port switching issues
                 self.refreshPortBtn.setEnabled(False)
+                # Update port combo to show the connected port
+                connected_port = self.serThread.port
+                if connected_port:
+                    # Refresh the port list to include the newly connected port
+                    current_text = self.portCombo.currentText()
+                    self._refresh_port_list()
+                    # Select the connected port in the combo box
+                    for i in range(self.portCombo.count()):
+                        if self.portCombo.itemData(i) == connected_port:
+                            self.portCombo.setCurrentIndex(i)
+                            break
             except Exception:
                 pass
         else:
