@@ -407,11 +407,11 @@ class Main(QtWidgets.QWidget):
         self.portCombo.currentTextChanged.connect(self._on_port_changed)
         port_layout.addWidget(self.portCombo)
 
-        refresh_btn = QtWidgets.QPushButton("Refresh")
-        refresh_btn.clicked.connect(self._refresh_port_list)
-        refresh_btn.setMaximumWidth(80)
-        refresh_btn.setFixedHeight(WIDGET_HEIGHT)
-        port_layout.addWidget(refresh_btn)
+        self.refreshPortBtn = QtWidgets.QPushButton("Refresh")
+        self.refreshPortBtn.clicked.connect(self._refresh_port_list)
+        self.refreshPortBtn.setMaximumWidth(80)
+        self.refreshPortBtn.setFixedHeight(WIDGET_HEIGHT)
+        port_layout.addWidget(self.refreshPortBtn)
 
         # JR Bay status right after the port controls
         self.jrBayStatusLabel = QtWidgets.QLabel("Disconnected")
@@ -562,6 +562,8 @@ class Main(QtWidgets.QWidget):
             try:
                 self.jrBayStatusLabel.setText("Connected")
                 self.jrBayStatusLabel.setStyleSheet("color: white; font-weight: bold;")
+                # Disable refresh button while connected to prevent port switching issues
+                self.refreshPortBtn.setEnabled(False)
             except Exception:
                 pass
         else:
@@ -569,6 +571,8 @@ class Main(QtWidgets.QWidget):
             try:
                 self.jrBayStatusLabel.setText("Disconnected")
                 self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
+                # Re-enable refresh button when disconnected
+                self.refreshPortBtn.setEnabled(True)
             except Exception:
                 pass
             # When the serial port disconnects the TX is implicitly unreachable
@@ -857,7 +861,7 @@ class Main(QtWidgets.QWidget):
 
     def _refresh_port_list(self):
         """Refresh the list of available COM ports"""
-        current = self.portCombo.currentText()
+        current = self.portCombo.currentData()  # Get actual port data, not display text
         self.portCombo.blockSignals(True)
         self.portCombo.clear()
         ports = get_available_ports()
