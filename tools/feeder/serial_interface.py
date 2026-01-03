@@ -19,8 +19,6 @@ from crsf_protocol import (
     CRSF_ADDRESS_FLIGHT_CONTROLLER,
     CRSF_FRAMETYPE_RC_CHANNELS_PACKED,
     CRSF_FRAMETYPE_LINK_STATISTICS,
-    CRSF_FRAMETYPE_HANDSET,
-    CRSF_HANDSET_SUBCMD_TIMING,
     CRSF_FRAMETYPE_DEVICE_PING,
     CRSF_FRAMETYPE_DEVICE_INFO,
     CRSF_FRAMETYPE_PARAMETER_SETTINGS_ENTRY,
@@ -62,7 +60,6 @@ class SerialThread(QtCore.QObject):
         telemetry: Emitted with link statistics dict
         debug: Emitted with debug/log messages
         channels_update: Emitted with list of 16 channel values (microseconds)
-        sync_update: Emitted with (interval_us, offset_us, src) for timing sync
         connection_status: Emitted with True/False for connected/disconnected
         device_discovered: Emitted with (src, device_dict) when device responds
         device_parameters_loaded: Emitted with (src, device_dict) when params loaded
@@ -73,8 +70,6 @@ class SerialThread(QtCore.QObject):
     telemetry = QtCore.pyqtSignal(dict)
     debug = QtCore.pyqtSignal(str)
     channels_update = QtCore.pyqtSignal(list)
-    # (interval_us, offset_us, src) - include src address so UI can associate heartbeat
-    sync_update = QtCore.pyqtSignal(int, int, int)
     connection_status = QtCore.pyqtSignal(bool)  # True = connected, False = disconnected
     device_discovered = QtCore.pyqtSignal(int, dict)  # src, details
     device_parameters_loaded = QtCore.pyqtSignal(int, dict)  # src, details
@@ -100,12 +95,17 @@ class SerialThread(QtCore.QObject):
         self.channels_lock = threading.Lock()
         self.latest_channels = [1500] * CHANNELS
 
-        # Send interval in microseconds; host default is based on SEND_HZ
-        self.send_interval_us = int(1000000 / SEND_HZ)
+        # Send interval in microseconds; fixed at 250Hz (4000us)
+        self.send_interval_us = 4000  # 250Hz = 4ms period
         self._last_send_time = time.perf_counter()
 
         # Track last joystick update time to inhibit CRSF TX when joystick disconnected
         self._last_joystick_update_sec = 0.0
+
+        # Pending command queue (mimics ESP32 single-slot queue behavior)
+        # Non-RC frames are sent in place of the next scheduled RC frame
+        self._pending_cmd_lock = threading.Lock()
+        self._pending_cmd_frame = None  # Single-slot queue for non-RC frames
 
         # Discovery and ELRS parameter read state (auto-discovered)
         self._last_device_ping_time = 0.0
@@ -143,7 +143,7 @@ class SerialThread(QtCore.QObject):
                     self.ser.close()
                 except:
                     pass
-            self.ser = serial.Serial(self.port, self.baud, timeout=0.001)
+            self.ser = serial.Serial(self.port, self.baud, timeout=0.001, write_timeout=1.0)
             # Flush any stale data from the input buffer (module may have buffered responses)
             self.ser.reset_input_buffer()
             self.debug.emit(f"Connected to {self.port} @ {self.baud} baud")
@@ -269,13 +269,23 @@ class SerialThread(QtCore.QObject):
                     self._last_send_time = now
                     # Only send channels if we have recent joystick activity
                     if has_recent_activity:
-                        # Snapshot channels
-                        with self.channels_lock:
-                            channels_copy = list(self.latest_channels)
-                        # Build packet and send
+                        # Check if we have a pending command to send instead of RC frame
+                        pending_cmd = None
+                        with self._pending_cmd_lock:
+                            if self._pending_cmd_frame is not None:
+                                pending_cmd = self._pending_cmd_frame
+                                self._pending_cmd_frame = None  # Clear the slot
+                        
                         if self.ser:
                             try:
-                                pkt = build_crsf_channels_frame(channels_copy)
+                                if pending_cmd is not None:
+                                    # Send pending command instead of RC frame (mimics ESP32 behavior)
+                                    pkt = pending_cmd
+                                else:
+                                    # Send normal RC frame
+                                    with self.channels_lock:
+                                        channels_copy = list(self.latest_channels)
+                                    pkt = build_crsf_channels_frame(channels_copy)                               
                                 self.ser.write(pkt)
                             except Exception as e:
                                 # If building/sending channels fails, log exception
@@ -395,27 +405,6 @@ class SerialThread(QtCore.QObject):
             chans = unpack_crsf_channels(payload)
             # Emit channels (microseconds) via a dedicated signal so the GUI can update controls
             self.channels_update.emit(chans)
-        elif t == CRSF_FRAMETYPE_HANDSET and len(payload) >= 11:
-            # Extended handset frame: payload[0]=dest, payload[1]=orig, payload[2]=subType
-            sub = payload[2]
-            if sub == CRSF_HANDSET_SUBCMD_TIMING:
-                # Rate and offset in big-endian. rate is in 0.1µs units; offset is signed 0.1µs units
-                try:
-                    rate_be = int.from_bytes(payload[3:7], 'big', signed=False)
-                    offset_be = int.from_bytes(payload[7:11], 'big', signed=True)
-                    interval_us = rate_be // 10
-                    offset_us = int(offset_be) // 10
-                    # Emit the sync update with microseconds and source address
-                    # Update the internal send interval for the serial thread
-                    # Sanity check (keep within reasonable radio timings)
-                    if interval_us >= 500 and interval_us <= 50000:
-                        self.send_interval_us = int(interval_us)
-                    else:
-                        self.debug.emit(f"[SYNC] Ignoring out-of-range interval: {interval_us}µs")
-                    # Emit a UI-only event for display if connected: include src
-                    self.sync_update.emit(int(interval_us), int(offset_us), src)
-                except Exception as e:
-                    self.debug.emit(f"Sync parse error: {e}")
         else:
             # Device discovery and parameter frames
             if t == CRSF_FRAMETYPE_DEVICE_INFO:
@@ -441,7 +430,10 @@ class SerialThread(QtCore.QObject):
                     self.debug.emit(f"auto discovery trigger error: {e}")
 
     def _send_crsf_cmd(self, ftype: int, payload: bytes):
-        """Write a CRSF command frame to the serial port if connected.
+        """Queue a CRSF command frame to be sent in place of next RC frame.
+        
+        This mimics the ESP32 behavior where non-RC frames are queued and sent
+        instead of the next scheduled RC frame, preventing simultaneous sends.
 
         Args:
             ftype: Frame type byte
@@ -451,7 +443,14 @@ class SerialThread(QtCore.QObject):
             return
         try:
             pkt = build_crsf_frame(ftype, payload)
-            self.ser.write(pkt)
+            
+            # Queue the frame to be sent in place of next RC frame
+            queued = False
+            with self._pending_cmd_lock:
+                if self._pending_cmd_frame is None:
+                    self._pending_cmd_frame = pkt
+                    queued = True
+
         except Exception as e:
             self.debug.emit(f"_send_crsf_cmd error: {e}")
 

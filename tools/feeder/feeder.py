@@ -196,7 +196,6 @@ class Main(QtWidgets.QWidget):
         self.serThread.device_parameter_field_updated.connect(self._on_device_parameter_field_updated)
         self.serThread.connection_status.connect(self.onConnectionStatus)
         self.serThread.channels_update.connect(self.onChannels)
-        self.serThread.sync_update.connect(self.onSync)
 
         # Module status (will be updated in window title)
         self._module_status = "No module detected"
@@ -507,30 +506,56 @@ class Main(QtWidgets.QWidget):
         self.tabs.setTabText(1, self._module_status)
 
     def onTel(self, d):
-        for k, v in d.items():
-            if k in self.telLabels:
+        """Handle telemetry updates (link stats)."""
+        try:
+            # Update TX heartbeat based on link stats reception
+            self._last_tx_heartbeat = time.time()
+            if not self._tx_connected:
+                self._tx_connected = True
+                # Update module status if we have device info
                 try:
-                    # Special handling for TPWR - convert to mW value
-                    if k == 'TPWR' and v is not None:
-                        mw_value = tpwr_to_mw(v)
-                        unit = TELEMETRY_UNIT_MAP.get(k)
-                        if unit:
-                            text = f"{mw_value} {unit}"
-                        else:
-                            text = mw_value
+                    tx_name = None
+                    for addr in [CRSF_ADDRESS_CRSF_TRANSMITTER, CRSF_ADDRESS_TRANSMITTER_LEGACY]:
+                        dev = self.serThread.elrs_devices.get(addr, {})
+                        if dev and isinstance(dev, dict):
+                            tx_name = dev.get('name')
+                            if tx_name:
+                                break
+                    if tx_name:
+                        self._module_status = tx_name
                     else:
-                        unit = TELEMETRY_UNIT_MAP.get(k)
-                        if unit and v is not None:
-                            # display numeric values with units
-                            if isinstance(v, float):
-                                text = f"{v:.1f} {unit}"
-                            else:
-                                text = f"{v} {unit}"
-                        else:
-                            text = str(v)
+                        self._module_status = "Module Connected"
+                    self._update_module_status()
                 except Exception:
-                    text = str(v)
-                self.telLabels[k].setText(text)
+                    pass
+
+            # Update telemetry display
+            for k, v in d.items():
+                if k in self.telLabels:
+                    try:
+                        # Special handling for TPWR - convert to mW value
+                        if k == 'TPWR' and v is not None:
+                            mw_value = tpwr_to_mw(v)
+                            unit = TELEMETRY_UNIT_MAP.get(k)
+                            if unit:
+                                text = f"{mw_value} {unit}"
+                            else:
+                                text = mw_value
+                        else:
+                            unit = TELEMETRY_UNIT_MAP.get(k)
+                            if unit and v is not None:
+                                # display numeric values with units
+                                if isinstance(v, float):
+                                    text = f"{v:.1f} {unit}"
+                                else:
+                                    text = f"{v} {unit}"
+                            else:
+                                text = str(v)
+                    except Exception:
+                        text = str(v)
+                    self.telLabels[k].setText(text)
+        except Exception as e:
+            self.onDebug(f"onTel error: {e}")
 
 
     def onConnectionStatus(self, is_connected):
@@ -602,39 +627,6 @@ class Main(QtWidgets.QWidget):
                     self.rows[i].val.setText(str(v))
         except Exception as e:
             self.onDebug(f"onChannels error: {e}")
-
-    def onSync(self, interval_us, offset_us, src):
-        """Handle mixer sync (host timing) updates from CRSF frames.
-        Sets the GUI send timer interval to approximate the CRSF RC packet interval.
-        """
-        try:
-            if interval_us <= 0:
-                return
-            # GUI updates and TX heartbeat update
-            # Record heartbeat time for this TX source
-            try:
-                self._last_tx_heartbeat = time.time()
-                # mark TX connected and update module status
-                if not self._tx_connected:
-                    self._tx_connected = True
-                    # tx name from device discovery if present
-                    tx_name = None
-                    try:
-                        dev = self.serThread.elrs_devices.get(src, {})
-                        tx_name = dev.get('name') if isinstance(dev, dict) else None
-                    except Exception:
-                        tx_name = None
-                    if tx_name:
-                        self._module_status = tx_name
-                    else:
-                        self._module_status = "Module Connected"
-                    self._update_module_status()
-                    # Enable Configuration tab when module is detected
-                    self.tabs.setTabEnabled(1, True)
-            except Exception as e:
-                self.onDebug(f"onSync heartbeat update error: {e}")
-        except Exception as e:
-            self.onDebug(f"onSync error: {e}")
 
     def tick(self):
         axes, btns = self.joy.read()
@@ -737,7 +729,7 @@ class Main(QtWidgets.QWidget):
             except Exception:
                 pass
 
-        # TX heartbeat timeout: if we haven't seen a sync (handset timing) for >2s, mark TX disconnected
+        # TX heartbeat timeout: if we haven't seen link stats for >2s, mark TX disconnected
         try:
             if self._tx_connected and (time.time() - self._last_tx_heartbeat) > 2.0:
                 self._tx_connected = False
@@ -970,6 +962,8 @@ class Main(QtWidgets.QWidget):
                     pass
             except Exception:
                 pass
+            
+            # Queue parameter write - will be sent in place of next RC frame
             self.serThread._send_crsf_cmd(CRSF_FRAMETYPE_PARAMETER_WRITE, payload)
             # Track pending write so a later device read doesn't override the UI
             try:
@@ -1178,6 +1172,13 @@ class Main(QtWidgets.QWidget):
                 try:
                     self._module_status = name
                     self._update_module_status()
+                except Exception:
+                    pass
+                # Enable Configuration tab when TX module is discovered
+                try:
+                    self.tabs.setTabEnabled(1, True)
+                    self._tx_connected = True
+                    self._last_tx_heartbeat = time.time()
                 except Exception:
                     pass
             self.onDebug(f"Device discovered: {name} addr=0x{src:02X}")
