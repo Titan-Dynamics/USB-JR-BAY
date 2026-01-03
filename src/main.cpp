@@ -1,70 +1,109 @@
+/**
+ * @file main.cpp
+ * @brief ESP32-S3 CRSF Protocol Handler - Main Entry Point
+ *
+ * Implements EdgeTX-like communication with an ELRS TX module over
+ * a half-duplex one-wire UART. This is the Arduino setup/loop glue code.
+ *
+ * Hardware: ESP32-S3 (Seeed XIAO) + ELRS TX module on GPIO5
+ */
+
 #include <Arduino.h>
-#include "crsf_handler.h"
-#include "debug.h"
+#include "crsf_uart.h"
+#include "crsf_parser.h"
+#include "crsf_protocol.h"
+#include "module_sync.h"
+#include "rc_channels.h"
+#include "cdc_parser.h"
+#include "crsf_task.h"
 
-// ============================================================================
+// =============================================================================
+// Configuration
+// =============================================================================
+
+constexpr uint8_t CRSF_PIN = 5;                 // GPIO5 for half-duplex CRSF
+constexpr uint32_t CRSF_BAUDRATE = 1870000;     // CRSF baudrate
+constexpr uint32_t STATS_INTERVAL_MS = 5000;    // Print stats every 5s
+
+// =============================================================================
 // Global Objects
-// ============================================================================
+// =============================================================================
 
-// CRSF half-duplex serial driver
-CrsfSerial crsfSerial;
+static CRSFUart crsfUart;
+static ModuleSync moduleSync;
+static RCChannels rcChannels;
+static CRSFParser parser;
+static CDCParser cdcParser(rcChannels);
+static CRSFTask crsfTask(crsfUart, parser, cdcParser, moduleSync, rcChannels);
 
-// ============================================================================
-// Setup
-// ============================================================================
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/**
+ * Forward frame from CDC to TX module (callback for CDCParser)
+ */
+bool forwardCDCToModule(const uint8_t* frame, uint8_t length)
+{
+    return crsfTask.queueOutputFrame(frame, length);
+}
+
+/**
+ * Forward frame from module to CDC (callback for CRSFParser)
+ */
+void forwardModuleToCDC(const uint8_t* frame, uint8_t length)
+{
+    if (Serial) {
+        Serial.write(frame, length);
+    }
+}
+
+/**
+ * Handle serial data from PC (commands and CRSF frames)
+ */
+void handleSerialCommands()
+{
+    while (Serial.available()) {
+        uint8_t byte = Serial.read();
+
+        // Try to process as CRSF frame
+        cdcParser.processByte(byte);
+    }
+}
+
+// =============================================================================
+// Arduino Setup and Loop
+// =============================================================================
 
 void setup()
 {
-    // Initialize USB CDC for debugging and RC data input
-    Serial.begin(5250000);
+    // Initialize USB Serial for PC connection
+    Serial.begin(CRSF_BAUDRATE);
+    delay(1000);
 
-    // Initialize CRSF half-duplex UART
-    crsfSerial.begin();
+    // Initialize CRSF UART
+    crsfUart.begin(CRSF_PIN, CRSF_BAUDRATE);
 
-    // Debug output control:
-    // This affects all DBGPRINT/DBGPRINTLN/DBGPRINTF output throughout the code
-    // Debug::setEnabled(true);
-    Debug::setEnabled(false);
+    if (!crsfUart.isInitialized()) {
+        Serial.println("ERROR: Failed to initialize CRSF UART!");
+        while (1) { delay(1000); }
+    }
+
+    // Set up bidirectional frame forwarding
+    cdcParser.setForwardCallback(forwardCDCToModule);
+    parser.setToCDCCallback(forwardModuleToCDC);
+    
+    // Set up timing sync callback
+    parser.setTimingSyncCallback([](int32_t refreshRateUs, int32_t inputLagUs) {
+        moduleSync.updateTiming(refreshRateUs, inputLagUs);
+    });
 }
-
-// ============================================================================
-// Main Loop
-// ============================================================================
 
 void loop()
 {
-    // Transparent forwarder:
-    // Read bytes from USB CDC and send to CRSF UART (half-duplex)
-    static uint8_t buf[256];
-    uint16_t len = 0;
-
-    while (Serial.available() && len < sizeof(buf))
-    {
-        buf[len++] = Serial.read();
-    }
-
-    if (len > 0)
-    {
-        // Switch to TX, send burst, then return to RX
-        crsfSerial.setTxMode();
-        crsfSerial.write(buf, len);
-        crsfSerial.flush();
-        crsfSerial.setRxMode();
-
-        // Discard only the loopback echo (same number of bytes we just sent)
-        // Don't flush the entire RX buffer, as fast responses from the TX
-        // may already be arriving (e.g., DEVICE_INFO replies to DEVICE_PING)
-        uint16_t bytesToDiscard = len;
-        while (bytesToDiscard > 0 && crsfSerial.available())
-        {
-            crsfSerial.read();
-            bytesToDiscard--;
-        }
-    }
-
-    // Forward any bytes arriving from the ELRS UART back to USB CDC
-    while (crsfSerial.available())
-    {
-        Serial.write(crsfSerial.read());
-    }
+    // Run main CRSF task
+    crsfTask.run();
+    
+    // Handle serial commands from PC
+    handleSerialCommands();
 }

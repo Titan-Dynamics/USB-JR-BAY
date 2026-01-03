@@ -143,7 +143,7 @@ class SerialThread(QtCore.QObject):
                     self.ser.close()
                 except:
                     pass
-            self.ser = serial.Serial(self.port, self.baud, timeout=0.05)
+            self.ser = serial.Serial(self.port, self.baud, timeout=0.001)
             # Flush any stale data from the input buffer (module may have buffered responses)
             self.ser.reset_input_buffer()
             self.debug.emit(f"Connected to {self.port} @ {self.baud} baud")
@@ -250,8 +250,6 @@ class SerialThread(QtCore.QObject):
                         else:
                             # CRC mismatch — drop one byte and try again
                             del buf[0]
-                else:
-                    time.sleep(0.001)
             except Exception as e:
                 self.ser = None
                 self._update_status()
