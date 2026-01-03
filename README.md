@@ -1,6 +1,6 @@
 # USB JR Bay for ELRS
 
-Intended to simulate a JR Bay by forwarding joystick commands from a desktop app to an ESP32 which feeds CRSF to a TX Module. 3D-Printable JR bay STL files are included.
+Intended to simulate a JR Bay by forwarding joystick commands from a desktop app to an ESP32 which feeds CRSF to a TX Module. 3D-Printable JR bay (and tripod mount) STL files are included.
 
 - Input: 16 channels from host over USB CDC
 - Output: CRSF RC channels to JR bay at 1.87M baud
@@ -35,18 +35,19 @@ Note: Make sure the chosen ESP32 pin is 3.3V logic and wired to the module’s s
 
 `platformio.ini` is configured for `seeed_xiao_esp32s3`. Adjust if your board differs.
 
-## Desktop Feeder (Joystick -> USB)
+## Desktop App
 
-Simple Python feeder that reads a joystick and streams 16 channels to the board.
+Simple Python app that reads a joystick and streams 16 channels to the board to pass along to the JR Bay module.
 
 - Location: `tools/feeder/`
 - Requirements: Python 3.9+, `pip install -r tools/feeder/requirements.txt`
 - Auto-detects joystick if `--joy-index` is not provided and prints detected devices.
 - Auto-connects to the selected COM port (or previously selected).
-- Allows configuring channels as axes or buttons with toggle/rotary options.
+- Allows configuring channels as axes or buttons with toggle/rotary options. Treats POV hats as individual axes (up/down and left/right)
 - Prints link stats if TX module reports them over serial.
+- Allows for full configuration of the TX module like LUA on a handheld radio
 
-<img width="1402" height="932" alt="image" src="https://github.com/user-attachments/assets/7e17c2f9-4a30-47bb-9f2b-bd8c71a9aa49" />
+<img width="1362" height="939" alt="image" src="https://github.com/user-attachments/assets/545b151f-5011-475c-8f15-7982e59a8d1f" />
 
 Making it an exe is done with the command:
 `pyinstaller --onefile --windowed --icon="C:\Users\X\Documents\GitHub\USB-JR-ELRS\tools\feeder\icon.ico" --name="USB JR Bay" feeder.py`
