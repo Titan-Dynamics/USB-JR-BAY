@@ -2,6 +2,7 @@
 Joystick Input Handling
 
 This module manages joystick device detection, connection, and input reading.
+Called from main GUI thread at 500Hz.
 """
 
 import pygame
@@ -9,7 +10,13 @@ from PyQt5 import QtCore
 
 
 class JoystickHandler(QtCore.QObject):
-    """Handles joystick connection and input reading with hotplug support."""
+    """Handles joystick connection and input reading.
+
+    Called from main thread at 500Hz to read joystick and compute channels.
+
+    Signals:
+        status(str): Joystick connection status updates
+    """
 
     status = QtCore.pyqtSignal(str)
 
@@ -30,7 +37,52 @@ class JoystickHandler(QtCore.QObject):
         self.timer.timeout.connect(self._scan)
         self.timer.start(2000)
 
+        # Channel computation
+        self.channel_rows = []
+        self.toggle_group_enforcer = None
+
         self.status.emit("Scanning for controller...")
+
+    def set_channel_rows(self, rows):
+        """Set the channel row objects for computing output values.
+
+        Args:
+            rows: List of ChannelRow objects
+        """
+        self.channel_rows = rows
+
+    def set_toggle_group_enforcer(self, enforcer):
+        """Set the toggle group enforcement function.
+
+        Args:
+            enforcer: Function that takes a list of channels and returns enforced list
+        """
+        self.toggle_group_enforcer = enforcer
+
+    def compute_channels(self, axes, buttons):
+        """Compute channel values from joystick input.
+
+        Args:
+            axes: List of axis values from joystick
+            buttons: List of button states from joystick
+
+        Returns:
+            List of 16 channel values (1000-2000)
+        """
+        try:
+            # Compute raw channel values from each row
+            if not self.channel_rows:
+                return [1500] * 16
+
+            ch = [row.compute(axes, buttons) for row in self.channel_rows]
+
+            # Enforce toggle groups if enforcer is set
+            if self.toggle_group_enforcer:
+                ch = self.toggle_group_enforcer(ch)
+
+            return ch
+        except Exception:
+            return [1500] * 16
 
     def _handle_device_added(self, device_index: int):
         """Handle a newly added joystick device (pygame 2+).

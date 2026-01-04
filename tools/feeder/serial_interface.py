@@ -3,7 +3,7 @@ Serial Interface Module
 
 This module contains the SerialThread class which handles all serial communication
 with the ELRS module, including:
-- CRSF frame parsing and transmission
+- CRSF frame parsing and transmission at 250Hz
 - Device discovery and parameter loading
 - Telemetry and channel data processing
 - Connection management
@@ -42,7 +42,6 @@ from device_parameters import (
 
 # Constants from main feeder module
 CHANNELS = 16
-SEND_HZ = 60
 
 
 class SerialThread(QtCore.QObject):
@@ -54,7 +53,7 @@ class SerialThread(QtCore.QObject):
     - Device discovery via ping/info frames
     - Parameter loading and chunked reads
     - Telemetry data extraction
-    - Channel data transmission and reception
+    - Channel data transmission at 250Hz
 
     Signals:
         telemetry: Emitted with link statistics dict
@@ -91,7 +90,7 @@ class SerialThread(QtCore.QObject):
         self._last_status = False
         self._initial_connect_attempted = False
 
-        # Shared channel buffer between UI and serial thread
+        # Shared channel buffer for latest computed values
         self.channels_lock = threading.Lock()
         self.latest_channels = [1500] * CHANNELS
 
@@ -99,8 +98,8 @@ class SerialThread(QtCore.QObject):
         self.send_interval_us = 4000  # 250Hz = 4ms period
         self._last_send_time = time.perf_counter()
 
-        # Track last joystick update time to inhibit CRSF TX when joystick disconnected
-        self._last_joystick_update_sec = 0.0
+        # Track last channel update time to inhibit CRSF TX when no channels received
+        self._last_channel_update_sec = 0.0
 
         # Pending command queue (mimics ESP32 single-slot queue behavior)
         # Non-RC frames are sent in place of the next scheduled RC frame
@@ -198,19 +197,21 @@ class SerialThread(QtCore.QObject):
         except Exception:
             pass
 
-    def send_channels(self, ch16):
-        """Update the channel buffer to be sent at the configured frequency.
+    def update_channels(self, channels):
+        """Receive computed channel values from main GUI thread.
+
+        This method is called from main tick() at 500Hz with fresh computed channels.
 
         Args:
-            ch16: List of channel values in microseconds (1000-2000)
+            channels: List of 16 channel values (1000-2000)
         """
         try:
             with self.channels_lock:
-                self.latest_channels = list(ch16[:CHANNELS]) + [1500] * max(0, CHANNELS - len(ch16))
-            # Mark joystick activity (update timestamp)
-            self._last_joystick_update_sec = time.time()
+                self.latest_channels = list(channels[:CHANNELS]) + [1500] * max(0, CHANNELS - len(channels))
+            # Mark channel activity (update timestamp)
+            self._last_channel_update_sec = time.time()
         except Exception as e:
-            self.debug.emit(f"send_channels error: {e}")
+            self.debug.emit(f"update_channels error: {e}")
 
     def run(self):
         """Main thread loop: reads frames, sends channels, and manages discovery."""
@@ -263,11 +264,11 @@ class SerialThread(QtCore.QObject):
             try:
                 now = time.perf_counter()
                 elapsed_us = (now - self._last_send_time) * 1e6
-                # Inhibit CRSF TX if no joystick updates for >1s (disconnected or never connected)
-                has_recent_activity = time.time() - self._last_joystick_update_sec <= 1.0
+                # Inhibit CRSF TX if no channel updates for >1s (disconnected or never connected)
+                has_recent_activity = time.time() - self._last_channel_update_sec <= 1.0
                 if elapsed_us >= self.send_interval_us:
                     self._last_send_time = now
-                    # Only send channels if we have recent joystick activity
+                    # Only send channels if we have recent channel activity
                     if has_recent_activity:
                         # Check if we have a pending command to send instead of RC frame
                         pending_cmd = None
@@ -275,17 +276,17 @@ class SerialThread(QtCore.QObject):
                             if self._pending_cmd_frame is not None:
                                 pending_cmd = self._pending_cmd_frame
                                 self._pending_cmd_frame = None  # Clear the slot
-                        
+
                         if self.ser:
                             try:
                                 if pending_cmd is not None:
                                     # Send pending command instead of RC frame (mimics ESP32 behavior)
                                     pkt = pending_cmd
                                 else:
-                                    # Send normal RC frame
+                                    # Send normal RC frame with latest computed channels
                                     with self.channels_lock:
                                         channels_copy = list(self.latest_channels)
-                                    pkt = build_crsf_channels_frame(channels_copy)                               
+                                    pkt = build_crsf_channels_frame(channels_copy)
                                 self.ser.write(pkt)
                             except Exception as e:
                                 # If building/sending channels fails, log exception

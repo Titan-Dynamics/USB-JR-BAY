@@ -436,6 +436,407 @@ The production code uses `#ifndef UNIT_TEST` guards to allow test files to injec
 
 ---
 
+---
+
+## Frontend GUI Architecture (tools/feeder/)
+
+The **Feeder GUI** is a PyQt5-based desktop application that serves as the PC-side controller interface. It reads joystick/gamepad input, manages channel mappings, and sends CRSF frames to the ESP32 via USB CDC serial.
+
+### Directory Structure
+
+```
+tools/feeder/
+├── feeder.py              # Main GUI application and window
+├── serial_interface.py    # Serial communication thread
+├── crsf_protocol.py       # CRSF protocol implementation
+├── device_parameters.py   # Device parameter parsing
+├── joystick_handler.py    # Joystick input handling
+├── channel_ui.py          # Channel configuration widgets
+├── config_manager.py      # Configuration persistence
+└── version.py             # Version information
+```
+
+### Key Components
+
+#### 1. Main GUI (feeder.py)
+
+**Purpose**: Main application window, UI orchestration, and state management
+
+**Main Class**: `Main(QtWidgets.QWidget)`
+- **Responsibilities**:
+  - Channel configuration UI (16 channels in scrollable column)
+  - Joystick visualization (Mode 1/Mode 2 stick diagrams)
+  - Link statistics display (RSSI, LQ, SNR, TX power)
+  - Console logging (collapsible debug output)
+  - CSV data logging (10Hz telemetry + channels)
+  - Device discovery and parameter management
+  - Module configuration tab (TX module parameters)
+
+**Key Features**:
+- **Dark Theme**: Custom Qt stylesheet with dark title bar on Windows
+- **Display Modes**:
+  - "Channels" - Shows all 16 channel bars
+  - "Mode 1 Sticks + Channels" - Left: CH4/CH2, Right: CH1/CH3
+  - "Mode 2 Sticks + Channels" - Left: CH4/CH3, Right: CH1/CH2
+- **Toggle Groups**: Channels can be grouped so only one toggle per group is active
+- **CSV Logging**: Captures channels + link stats at 10Hz, buffers 600 lines before flush
+- **Failsafe Indicator**: Shows ESP32 connection status (red when disconnected)
+
+**Update Loop** (`tick()` @ 60Hz):
+- Read joystick input via `JoystickHandler`
+- Compute channel values from mappings
+- Enforce toggle group exclusivity
+- Update visualizers and progress bars
+- Send channels to `SerialThread` (decoupled)
+- Monitor TX heartbeat (link stats timeout)
+- Log to CSV if enabled
+
+#### 2. Serial Interface (serial_interface.py)
+
+**Purpose**: Manages all serial communication with ESP32 in a background thread
+
+**Main Class**: `SerialThread(QtCore.QObject)`
+- **Responsibilities**:
+  - Serial port connection/reconnection
+  - CRSF frame parsing and building
+  - Device discovery via ping/info frames
+  - Parameter loading (chunked reads with retry)
+  - Telemetry extraction (link stats)
+  - Channel transmission at 250Hz (4ms period)
+  - Auto-discovery state machine
+
+**Signals** (PyQt):
+- `telemetry(dict)` - Link statistics updates
+- `debug(str)` - Debug/log messages
+- `channels_update(list)` - RC channel values (when ESP32 echoes back)
+- `connection_status(bool)` - Serial port connected/disconnected
+- `device_discovered(int, dict)` - Device info received
+- `device_parameters_loaded(int, dict)` - Parameters fully loaded
+- `device_parameters_progress(int, int, int)` - Loading progress
+- `device_parameter_field_updated(int, int, dict)` - Single field updated
+
+**Channel Transmission**:
+- Main GUI calls `send_channels(ch16)` to update the shared buffer
+- Serial thread sends frames at fixed 250Hz (4000µs period)
+- Uses `perf_counter()` for precise timing
+- Non-RC frames (pings, param reads) are queued and sent in place of next RC frame (mimics ESP32 behavior)
+
+**Device Discovery**:
+- Auto-triggered when first RX frame is received from TX
+- Sends `DEVICE_PING` to both 0xEE and 0xEA addresses
+- Waits 500ms after first RX before sending pings (module initialization delay)
+- Parses `DEVICE_INFO` responses with DeviceInfo class
+- Automatically loads parameters for TX modules (not receivers)
+- Supports chunked parameter reads with retry on corruption
+
+**Parameter Loading**:
+- Builds descending load queue: `[N, N-1, ..., 2, 1]`
+- Sends `PARAMETER_READ` with chunk index
+- Assembles multi-chunk responses
+- Validates chunks using Lua-style `expectChunksRemain` logic
+- Retries up to 3 times on parse/validation failures
+- Emits per-field updates for live UI refresh
+
+#### 3. CRSF Protocol (crsf_protocol.py)
+
+**Purpose**: CRSF protocol implementation (constants, CRC, frame building)
+
+**Key Functions**:
+- `crc8_d5(data)` - CRC8 calculation with polynomial 0xD5
+- `us_to_crsf_val(us)` - Convert 1000-2000µs → 172-1811 (11-bit CRSF)
+- `crsf_val_to_us(val)` - Convert 11-bit CRSF → 1000-2000µs
+- `build_crsf_channels_frame(ch16)` - Pack 16 channels into 22-byte RC frame
+- `build_crsf_frame(ftype, payload)` - Generic frame builder
+- `unpack_crsf_channels(payload)` - Unpack 22-byte RC frame to 16 channels
+
+**Protocol Constants**:
+- `CRSF_ADDRESS_FLIGHT_CONTROLLER = 0xC8` - FC address (sync byte)
+- `CRSF_ADDRESS_CRSF_TRANSMITTER = 0xEE` - TX module (new address)
+- `CRSF_ADDRESS_TRANSMITTER_LEGACY = 0xEA` - TX module (legacy address)
+- `CRSF_ADDRESS_ELRS_LUA = 0xEF` - Lua script destination
+- Frame types: `0x16` (RC), `0x14` (Link Stats), `0x28` (Ping), `0x29` (Device Info), `0x2B` (Param Entry), `0x2C` (Param Read), `0x2D` (Param Write)
+
+#### 4. Device Parameters (device_parameters.py)
+
+**Purpose**: Parse and validate ELRS device parameter fields
+
+**DeviceParameterParser Class**:
+- `parse_field_blob(data)` - Parse raw parameter field data into dictionary
+  - Supports field types: 0-8 (numeric), 9 (selection), 11 (folder/info), 12 (string), 13 (command)
+  - Extracts: parent, type, hidden, name, values, min/max/default, unit
+  - Handles signed/unsigned conversion
+  - Reads null-terminated strings and semicolon-separated option lists
+
+- `validate_parsed_field(parsed, field_id)` - Detect corruption
+  - Checks for valid field type (0-13)
+  - Validates selection fields have values list
+  - Ensures field names are printable
+  - Returns False if field should be re-read
+
+**DeviceInfo Class**:
+- Container for device information (name, serial, hw/sw version, param count)
+- `parse_device_info_payload(payload)` - Parse `DEVICE_INFO` CRSF frame
+  - Returns tuple: (dst, src, name, serial, hw_ver, sw_ver, n_params, proto_ver)
+  - Handles variable-length null-terminated device name
+
+#### 5. Joystick Handler (joystick_handler.py)
+
+**Purpose**: High-frequency joystick reading and channel computation (250Hz+)
+
+**JoystickHandler Class** (extends `QtCore.QObject`):
+- **Runs in dedicated background thread for maximum performance**
+- **Responsibilities**:
+  - Joystick detection with hotplug support (pygame 2.x)
+  - Input reading at 250Hz+ (no sleeps in hot path)
+  - Channel value computation from joystick input
+  - Toggle group enforcement
+  - Dual-rate signal emission (250Hz for SerialThread, 60Hz for GUI)
+
+- **Initialization**:
+  - Uses pygame for joystick access
+  - Supports hotplug events (`JOYDEVICEADDED`, `JOYDEVICEREMOVED`)
+  - Periodic scan for older pygame versions (2s interval via QTimer)
+  - Thread created but not started until `start_thread()` called
+
+- **High-Frequency Thread** (`_run_loop()` @ 250Hz+):
+  - Reads joystick via `read()` method (axes, buttons)
+  - Computes all 16 channels via `_compute_channels_from_joystick()`
+  - Enforces toggle groups if configured
+  - Emits `computed_channels` signal at full speed (250Hz+)
+  - Emits `gui_update` signal throttled to 60Hz
+  - **NO sleep calls when joystick connected** (maximum performance)
+  - 10ms sleep only when joystick disconnected (prevents CPU spin)
+
+- **Auto-reconnection**:
+  - Detects `JOYDEVICEADDED` and `JOYDEVICEREMOVED` events
+  - Automatically reconnects when joystick is plugged in
+  - Handles disconnect gracefully (resets to scanning state)
+
+- **Input Reading** (`read()` method):
+  - Returns `(axes, buttons)` tuple
+  - Axes: List of floats (-1.0 to 1.0), includes POV hat as last 2 axes
+  - Buttons: List of ints (0 or 1)
+  - Handles joystick errors during read (auto-disconnect)
+
+**Signals**:
+- `status(str)` - Joystick connection status ("Scanning...", joystick name, errors)
+- `computed_channels(list, list, list)` - Fresh channels, axes, buttons @ 250Hz+ for SerialThread
+- `gui_update(list, list, list)` - Throttled channels, axes, buttons @ 60Hz for GUI display
+
+**Methods**:
+- `set_channel_rows(rows)` - Receives ChannelRow objects for computation
+- `set_toggle_group_enforcer(enforcer)` - Sets toggle group enforcement function
+- `start_thread()` - Starts background thread (call after channel rows set)
+- `stop_thread()` - Graceful shutdown with 1s timeout join
+
+#### 6. Channel UI (channel_ui.py)
+
+**Purpose**: UI components for channel configuration and mapping
+
+**ChannelRow Class**:
+- Individual channel configuration widget (2-row layout)
+- **Top Row**: Name, Source, Index, Map button, Progress bar, Value display
+- **Bottom Row**: Min, Mid, Max, Reverse, Toggle, Rotary, Expo controls
+
+**Channel Modes**:
+1. **Axis Mode** (`src="axis"`):
+   - Maps joystick axis to output range with expo curve
+   - Formula: `out = center + (axis_val ^ expo) * (max - center)`
+   - Supports reverse (invert)
+   - Shows expo slider (1.0 - 5.0)
+
+2. **Button Mode** (`src="button"`):
+   - **Direct**: Button press → max, release → min
+   - **Toggle**: Button press cycles on/off state
+   - **Rotary**: Button press cycles through N stops (3-6)
+   - Supports toggle groups (only one active per group)
+
+3. **Multi-Button Mode** (`src="multi"`):
+   - Maps multiple buttons to different output values
+   - Configurable via dialog (button index → value mapping)
+   - Supports default button for initial state
+   - Live highlight shows which button is pressed
+
+4. **None** (`src="none"`):
+   - Channel unmapped, outputs minimum value
+
+**MultiButtonDialog**:
+- Modal dialog for configuring multi-button mappings
+- Add/remove button mappings
+- Set output value per button
+- Mark one button as default
+- Live detection of button presses during config
+
+**Mapping Flow**:
+1. User clicks "Map" button
+2. GUI enters mapping mode (button shows "...")
+3. User moves axis or presses button
+4. GUI detects largest change (axis: >0.35 delta, button: 0→1 transition)
+5. Channel updates to detected source/index
+6. 5-second timeout if no input detected
+
+#### 7. Config Manager (config_manager.py)
+
+**Purpose**: Configuration persistence and serial port enumeration
+
+**ConfigManager Class**:
+- Loads/saves `calib.json` file
+- Default configuration includes:
+  - Serial port (platform-dependent: COM1 on Windows, /dev/ttyACM0 on Linux)
+  - Display mode ("Channels", "Mode 1 Sticks + Channels", "Mode 2 Sticks + Channels")
+  - 16 channel configurations (source, index, min/center/max, reverse, toggle, rotary, expo)
+
+**Functions**:
+- `get_available_ports()` - Enumerate serial ports using pyserial
+  - Returns list of tuples: `[(port, description), ...]`
+  - Sorted alphabetically for consistent ordering
+
+### Data Flow
+
+```
+[Joystick]
+    ↓ (pygame)
+[JoystickHandler.read()] → (axes, buttons)
+    ↓
+[Main.tick() @ 60Hz]
+    ↓
+[ChannelRow.compute()] → channel values (16x)
+    ↓
+[Toggle Group Enforcement]
+    ↓
+[SerialThread.send_channels()] → updates shared buffer
+    ↓
+[SerialThread TX Loop @ 250Hz]
+    ↓
+[build_crsf_channels_frame()] → CRSF frame
+    ↓
+[Serial.write()] → USB CDC → ESP32
+```
+
+```
+[ESP32 via USB CDC]
+    ↓
+[SerialThread RX Loop]
+    ↓
+[CRSF Frame Parser]
+    ↓
+├─ LINK_STATISTICS → telemetry signal → Link Stats UI
+├─ DEVICE_INFO → device_discovered signal → Module Config Tab
+├─ PARAMETER_SETTINGS_ENTRY → field parsing → UI update
+└─ RC_CHANNELS_PACKED → channels_update signal → Channel Bars
+```
+
+### Module Configuration Tab
+
+**Purpose**: Configure TX module parameters (packet rate, power, etc.)
+
+**UI Generation**:
+- Dynamically populated from device parameter fields
+- Supports field types:
+  - Type 9 (selection): QComboBox with options
+  - Type 0-8 (numeric): QComboBox with min/max/step range
+  - Type 11 (folder): QGroupBox container
+  - Type 12 (string info): QLabel (read-only)
+  - Type 13 (command): QPushButton
+
+**Parameter Writes**:
+- User changes dropdown → `_on_param_changed(fid, value)`
+- Builds `PARAMETER_WRITE` payload: `[device_id, ELRS_LUA, fid, value]`
+- Queued to serial thread (sent in place of next RC frame)
+- Tracked in `_pending_param_writes` dict to prevent UI overwrite
+- Special handling for RF Band changes (triggers Packet Rate reload)
+
+**Parameter Refresh**:
+- "Refresh" button triggers full device reload
+- Clears existing fields and fetched set
+- Rebuilds load queue from N down to 1
+- Shows progress bar during reload
+
+### CSV Logging
+
+**Purpose**: Record telemetry and channel data for analysis
+
+**Log Format** (CSV):
+- Timestamp (YYYY-MM-DD HH:MM:SS.mmm)
+- Channels 1-16 (microseconds, only logged if mapped)
+- Link stats: 1RSS, 2RSS, LQ, RSNR, RFMD, TPWR, TRSS, TLQ, TSNR
+
+**Logging Behavior**:
+- Checkbox in top bar enables/disables logging
+- Creates timestamped file in `logs/` directory
+- Buffers up to 600 lines before flushing to disk
+- Samples at 10Hz (100ms interval)
+- Flushes buffer on app close or logging disabled
+
+### Error Handling
+
+**Serial Disconnects**:
+- Auto-reconnect with 500ms retry interval
+- Resets discovery state on disconnect
+- Clears device info and parameters
+- Updates UI to show "Disconnected" status
+
+**Joystick Disconnects**:
+- Stops sending RC frames (failsafe on ESP32)
+- Shows "Scanning for controller..." status
+- Auto-reconnects when joystick plugged back in
+
+**Parameter Read Failures**:
+- Validates chunk sequence numbers (Lua-style)
+- Retries up to 3 times on corruption
+- Logs errors to console
+- Marks field as fetched even if failed (prevents infinite loops)
+
+**TX Module Timeout**:
+- Monitors link stats reception
+- If no stats for >2s, marks TX as disconnected
+- Resets discovery state
+- Sends new pings when stats resume
+
+### Threading Model
+
+**Main Thread** (Qt Event Loop):
+- GUI rendering and event handling
+- Joystick input reading (60Hz)
+- Channel computation
+- UI updates (visualizers, bars, labels)
+
+**Serial Thread** (Background):
+- CRSF frame TX/RX at 250Hz
+- Device discovery state machine
+- Parameter loading queue processing
+- Emits Qt signals for cross-thread communication
+
+**Thread Safety**:
+- Channel buffer protected by `channels_lock` mutex
+- Pending command queue protected by `_pending_cmd_lock` mutex
+- Qt signals used for all cross-thread communication
+- No shared mutable state between threads
+
+### Build and Distribution
+
+**Dependencies**:
+- Python 3.7+
+- PyQt5 (GUI framework)
+- pygame (joystick input)
+- pyserial (serial port access)
+
+**Installation**:
+```bash
+pip install pyqt5 pygame pyserial
+```
+
+**Running**:
+```bash
+python tools/feeder/feeder.py
+```
+
+**PyInstaller Bundle**:
+- Creates standalone executable
+- Includes icon.ico for Windows
+
+---
+
 ## References
 
 - [ExpressLRS GitHub](https://github.com/ExpressLRS/ExpressLRS)

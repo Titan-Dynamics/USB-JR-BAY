@@ -43,7 +43,7 @@ TELEMETRY_UNIT_MAP = {
     'TPWR': 'mW',
 }
 
-SEND_HZ = 60
+SEND_HZ = 500  # Main loop frequency (joystick reading + GUI updates)
 
 def tpwr_to_mw(crsfpower):
     return {1: "10", 2: "25", 3: "100", 4: "500", 5: "1000",
@@ -183,7 +183,17 @@ class Main(QtWidgets.QWidget):
         self.mapping_baseline = ([], [])
         self.mapping_started_at = 0.0
 
-        # Serial thread
+        # Latest joystick data for mapping mode
+        self.latest_axes = []
+        self.latest_buttons = []
+
+        # Joystick (auto-scanning) - called from main tick() at 500Hz
+        self.joy = JoystickHandler()
+        # Connect joystick status
+        self.joy.status.connect(self.onDebug)
+        self.joy.status.connect(self.onJoyStatus)
+
+        # Serial thread - handles CRSF transmission at 250Hz
         self.serThread = SerialThread(self.cfg["serial_port"], DEFAULT_BAUD)
         self.thread = threading.Thread(target=self.serThread.run, daemon=True)
         self.thread.start()
@@ -199,11 +209,6 @@ class Main(QtWidgets.QWidget):
 
         # Module status (will be updated in window title)
         self._module_status = "No module detected"
-
-        # Joystick (auto-scanning) - using JoystickHandler instead of Joy
-        self.joy = JoystickHandler()
-        self.joy.status.connect(self.onDebug)
-        self.joy.status.connect(self.onJoyStatus)
 
         # Main content: channels on left, visualizers on right
         content_layout = QtWidgets.QHBoxLayout()
@@ -485,6 +490,11 @@ class Main(QtWidgets.QWidget):
         layout.addWidget(self.console_container)
         layout.setStretch(2, 1)
 
+        # Pass channel rows and toggle group enforcer to JoystickHandler
+        self.joy.set_channel_rows(self.rows)
+        self.joy.set_toggle_group_enforcer(self._enforce_toggle_groups)
+
+        # Start main tick timer at 500Hz (2ms interval)
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.timer.start(int(1000 / SEND_HZ))
@@ -628,9 +638,89 @@ class Main(QtWidgets.QWidget):
         except Exception as e:
             self.onDebug(f"onChannels error: {e}")
 
+    def _update_gui(self, ch, axes, btns, joystick_connected):
+        """Update GUI elements with computed channel values.
+
+        Args:
+            ch: List of 16 computed channel values
+            axes: List of joystick axis values
+            btns: List of joystick button values
+            joystick_connected: Boolean indicating if joystick is connected
+        """
+        # Update joystick visualizers (CH1-4)
+        try:
+            if len(ch) >= 4:
+                # Check which channels are mapped (not "none") from saved config
+                ch_mapped = [self.cfg["channels"][i].get("src", "none") != "none" for i in range(4)]
+
+                if self.current_mode == "Mode 1":
+                    # Mode 1: Left stick = CH4 horiz, CH2 vert; Right stick = CH1 horiz, CH3 vert
+                    self.viz1.set_values(ch[3], ch[1], ch_mapped[3], ch_mapped[1])  # CH4 horizontal, CH2 vertical
+                    self.viz2.set_values(ch[0], ch[2], ch_mapped[0], ch_mapped[2])  # CH1 horizontal, CH3 vertical
+                else:  # Mode 2
+                    # Mode 2: Left stick = CH4 horiz, CH3 vert; Right stick = CH1 horiz, CH2 vert
+                    self.viz1.set_values(ch[3], ch[2], ch_mapped[3], ch_mapped[2])  # CH4 horizontal, CH3 vertical
+                    self.viz2.set_values(ch[0], ch[1], ch_mapped[0], ch_mapped[1])  # CH1 horizontal, CH2 vertical
+        except Exception:
+            pass
+
+        # Update progress bars for channels 1-16
+        try:
+            # Update all channel bars in real-time
+            for i, bar in enumerate(self.all_channel_bars):
+                if i < len(ch):
+                    bar.setValue(ch[i])
+        except Exception:
+            pass
+
+        # CSV logging (10Hz)
+        if self.logging_enabled.isChecked():
+            try:
+                now = time.time()
+                if now - self.last_log_time >= 0.1:
+                    self.last_log_time = now
+                    # Build CSV row
+                    ts = time.strftime("%Y-%m-%d %H:%M:%S.", time.localtime(now)) + f"{int((now % 1) * 1000):03d}"
+                    row_data = {'timestamp': ts}
+
+                    # Add mapped channels only (check if source is not "none")
+                    for i in range(CHANNELS):
+                        src = self.cfg["channels"][i].get("src", "none") if i < len(self.cfg["channels"]) else "none"
+                        if src != "none" and i < len(ch):
+                            row_data[f'CH{i+1}'] = ch[i]
+
+                    # Add link stats
+                    row_data.update(self.csv_latest_telemetry)
+
+                    # Write row to buffer
+                    self.csv_buffer.append(row_data)
+
+                    # Flush every 600 lines (~60 seconds)
+                    if len(self.csv_buffer) >= 600:
+                        self._flush_csv_buffer()
+            except Exception as e:
+                self.onDebug(f"CSV logging error: {e}")
+
     def tick(self):
+        """Main update loop at 500Hz.
+
+        Reads joystick, computes channels, updates GUI, and sends to SerialThread.
+        """
+        # Read joystick input
         axes, btns = self.joy.read()
+        self.latest_axes = axes
+        self.latest_buttons = btns
         joystick_connected = self.joy.j is not None
+
+        # Compute channels from joystick (includes toggle group enforcement)
+        ch = self.joy.compute_channels(axes, btns)
+
+        # Send channels to SerialThread for CRSF transmission at 250Hz
+        if joystick_connected:
+            self.serThread.update_channels(ch)
+
+        # Update GUI visualizers and bars
+        self._update_gui(ch, axes, btns, joystick_connected)
 
         # Mapping mode: detect next button press or large axis move
         if self.mapping_row is not None:
@@ -691,44 +781,6 @@ class Main(QtWidgets.QWidget):
                     pass
                 self.mapping_row = None
 
-        ch = [r.compute(axes, btns) for r in self.rows]
-
-        # Enforce toggle groups: only one toggle per group can be on
-        ch = self._enforce_toggle_groups(ch)
-
-        # Update joystick visualizers (CH1-4)
-        try:
-            if len(ch) >= 4:
-                # Check which channels are mapped (not "none") from saved config
-                ch_mapped = [self.cfg["channels"][i].get("src", "none") != "none" for i in range(4)]
-
-                if self.current_mode == "Mode 1":
-                    # Mode 1: Left stick = CH4 horiz, CH2 vert; Right stick = CH1 horiz, CH3 vert
-                    self.viz1.set_values(ch[3], ch[1], ch_mapped[3], ch_mapped[1])  # CH4 horizontal, CH2 vertical
-                    self.viz2.set_values(ch[0], ch[2], ch_mapped[0], ch_mapped[2])  # CH1 horizontal, CH3 vertical
-                else:  # Mode 2
-                    # Mode 2: Left stick = CH4 horiz, CH3 vert; Right stick = CH1 horiz, CH2 vert
-                    self.viz1.set_values(ch[3], ch[2], ch_mapped[3], ch_mapped[2])  # CH4 horizontal, CH3 vertical
-                    self.viz2.set_values(ch[0], ch[1], ch_mapped[0], ch_mapped[1])  # CH1 horizontal, CH2 vertical
-        except Exception:
-            pass
-
-        # Update progress bars for channels 1-16
-        try:
-            # Update all channel bars in real-time
-            for i, bar in enumerate(self.all_channel_bars):
-                if i < len(ch):
-                    bar.setValue(ch[i])
-        except Exception:
-            pass
-
-        # Update the shared channel buffer (decoupled); avoid transmitting when joystick disconnected
-        if joystick_connected:
-            try:
-                self.serThread.send_channels(ch)
-            except Exception:
-                pass
-
         # TX heartbeat timeout: if we haven't seen link stats for >2s, mark TX disconnected
         try:
             if self._tx_connected and (time.time() - self._last_tx_heartbeat) > 2.0:
@@ -751,13 +803,8 @@ class Main(QtWidgets.QWidget):
         except Exception as e:
             self.onDebug(f"TX heartbeat check failed: {e}")
 
-        # CSV logging at 10Hz (if enabled)
-        now = time.time()
-        if self.logging_enabled.isChecked() and (now - self.csv_last_write_time) >= 0.1:  # 10Hz = 100ms
-            self._log_to_csv(ch)
-            self.csv_last_write_time = now
-
         # Link stats timeout check
+        now = time.time()
         timeout = now - self.serThread.last_link_stats_time > 5.0
         color = "#888888" if timeout else "#e0e0e0"
         for lab in self.telLabels.values():
@@ -954,12 +1001,8 @@ class Main(QtWidgets.QWidget):
             payload = bytes([device_id, CRSF_ADDRESS_ELRS_LUA, int(fid) & 0xFF, int(value) & 0xFF])
             try:
                 msg = f"Param cmd: send parameter write payload: {payload.hex()} (dev={device_id}, fid={fid}, value={value})"
-                self.onDebug(msg)
-                try:
-                    # Also emit on the serial thread debug signal so tests/listeners can capture it
-                    self.serThread.debug.emit(msg)
-                except Exception:
-                    pass
+                # Emit on serial thread debug signal (connected to onDebug for console display)
+                self.serThread.debug.emit(msg)
             except Exception:
                 pass
             
@@ -1017,6 +1060,10 @@ class Main(QtWidgets.QWidget):
 
     def closeEvent(self, e):
         try:
+            self.joy.stop_thread()
+        except:
+            pass
+        try:
             self.serThread.close()
         except:
             pass
@@ -1045,9 +1092,10 @@ class Main(QtWidgets.QWidget):
                 self.onDebug("No joystick connected. Cannot map channel.")
                 return
 
-            # Read baseline joystick state
-            axes, btns = self.joy.read()
-            if axes is None and btns is None:
+            # Use cached baseline joystick state from JoystickHandler
+            axes = list(self.latest_axes) if self.latest_axes else []
+            btns = list(self.latest_buttons) if self.latest_buttons else []
+            if not axes and not btns:
                 self.onDebug("Cannot read joystick state. Cannot map channel.")
                 return
 
