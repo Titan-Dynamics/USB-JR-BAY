@@ -30,11 +30,13 @@ class TestCRSFStateMachine(unittest.TestCase):
         self.sent_frames = []
         self.mock_time = 0.004  # Start at 4ms so first call will send immediately
         
-        # Set up callback to capture sent frames
-        def capture_frame(frame):
-            self.sent_frames.append(frame)
+        # Create mock serial port with Arduino-style interface
+        self.mock_serial = Mock()
+        self.mock_serial.available.return_value = 0
+        self.mock_serial.read.return_value = -1
+        self.mock_serial.write.side_effect = lambda frame: self.sent_frames.append(frame)
         
-        self.state_machine.set_send_callback(capture_frame)
+        self.state_machine.set_serial(self.mock_serial)
 
     def tearDown(self):
         """Clean up after tests"""

@@ -385,3 +385,126 @@ def parse_rc_channels(payload: bytes) -> Optional[List[int]]:
         return None
 
     return unpack_channels(payload)
+
+
+# =============================================================================
+# Frame Decoder (Stateful byte-by-byte parser)
+# =============================================================================
+
+class CRSFFrameDecoder:
+    """
+    Stateful CRSF frame decoder that processes bytes one at a time.
+    
+    Usage:
+        decoder = CRSFFrameDecoder()
+        for byte in serial_data:
+            frame = decoder.push_byte(byte)
+            if frame is not None:
+                # Process complete frame
+                print(f"Frame type: {frame['type']}")
+    """
+    
+    def __init__(self):
+        """Initialize the decoder state machine."""
+        self.reset()
+    
+    def reset(self):
+        """Reset decoder to initial state."""
+        self.state = 'WAIT_ADDRESS'
+        self.buffer = bytearray()
+        self.expected_length = 0
+    
+    def push_byte(self, byte: int) -> Optional[dict]:
+        """
+        Push a single byte into the decoder.
+        
+        Args:
+            byte: Single byte (0-255)
+        
+        Returns:
+            Dictionary with decoded frame if complete, None otherwise.
+            Frame dict contains:
+                - 'address': Destination address
+                - 'length': Payload length (type + payload + CRC)
+                - 'type': Frame type
+                - 'payload': Payload bytes (without type and CRC)
+                - 'crc': CRC byte
+                - 'valid': True if CRC is valid
+                - 'raw': Complete raw frame bytes
+        """
+        if self.state == 'WAIT_ADDRESS':
+            # Looking for a valid address byte
+            # Valid addresses: 0x00, 0xC8, 0xEA, 0xEC, 0xEE, 0xEF
+            if byte in (0x00, 0xC8, 0xEA, 0xEC, 0xEE, 0xEF):
+                self.buffer = bytearray([byte])
+                self.state = 'WAIT_LENGTH'
+            return None
+        
+        elif self.state == 'WAIT_LENGTH':
+            # Length byte (type + payload + CRC)
+            self.buffer.append(byte)
+            self.expected_length = byte
+            
+            # Sanity check: length must be at least 2 (type + CRC) and < max frame size
+            if self.expected_length < 2 or self.expected_length > CRSF_MAX_FRAME_SIZE:
+                self.reset()
+                return None
+            
+            self.state = 'READ_FRAME'
+            return None
+        
+        elif self.state == 'READ_FRAME':
+            # Accumulate frame bytes
+            self.buffer.append(byte)
+            
+            # Check if we have the complete frame (address + length + expected_length bytes)
+            if len(self.buffer) >= 2 + self.expected_length:
+                # Frame complete - parse and validate
+                frame = self._parse_complete_frame()
+                self.reset()
+                return frame
+            
+            return None
+        
+        # Should never reach here
+        self.reset()
+        return None
+    
+    def _parse_complete_frame(self) -> Optional[dict]:
+        """
+        Parse a complete frame from the buffer.
+        
+        Returns:
+            Frame dictionary or None if invalid
+        """
+        if len(self.buffer) < 4:  # Minimum: address + length + type + CRC
+            return None
+        
+        address = self.buffer[0]
+        length = self.buffer[1]
+        frame_type = self.buffer[2]
+        
+        # Extract payload (everything between type and CRC)
+        payload_start = 3
+        payload_end = 2 + length - 1  # -1 because CRC is last byte
+        crc_pos = 2 + length - 1
+        
+        if crc_pos >= len(self.buffer):
+            return None
+        
+        payload = bytes(self.buffer[payload_start:payload_end])
+        crc = self.buffer[crc_pos]
+        
+        # Validate CRC (over type + payload)
+        expected_crc = crsf_crc8(self.buffer[2:crc_pos])
+        crc_valid = (expected_crc == crc)
+        
+        return {
+            'address': address,
+            'length': length,
+            'type': frame_type,
+            'payload': payload,
+            'crc': crc,
+            'valid': crc_valid,
+            'raw': bytes(self.buffer)
+        }

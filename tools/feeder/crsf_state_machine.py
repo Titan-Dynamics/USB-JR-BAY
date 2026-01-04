@@ -15,7 +15,8 @@ from typing import Optional, Callable, List
 from collections import deque
 from crsf_protocol import (
     build_rc_frame, build_ping_frame, build_param_request,
-    convert_channel_1000_2000_to_crsf
+    convert_channel_1000_2000_to_crsf, CRSFFrameDecoder,
+    CRSF_FRAMETYPE_LINK_STATISTICS, parse_link_statistics
 )
 
 
@@ -54,18 +55,33 @@ class CRSFStateMachine:
         # Output frame queue (for params, pings, etc.)
         self.output_queue = deque(maxlen=10)
 
-        # Callback for sending frames (set externally for decoupling)
-        self.send_callback: Optional[Callable[[bytes], None]] = None
+        # Serial port object (set externally for decoupling)
+        # Expected to have available(), read(), and write() methods
+        self.serial_port = None
+        
+        # Frame decoder for receiving CRSF frames
+        self.frame_decoder = CRSFFrameDecoder()
+        
+        # Callback for link statistics (set externally)
+        self.link_stats_callback: Optional[Callable[[dict], None]] = None
 
-    def set_send_callback(self, callback: Callable[[bytes], None]):
-        """
-        Set the callback function for sending frames.
+    def set_serial(self, serial_port):
+        """Set the serial port object.
 
         Args:
-            callback: Function that takes frame bytes and sends them via UART/serial
-                     Signature: callback(frame: bytes) -> None
+            serial_port: Serial port object with available(), read(), and write() methods
+                        (e.g., SerialInterface instance)
         """
-        self.send_callback = callback
+        self.serial_port = serial_port
+
+    def set_link_stats_callback(self, callback: Callable[[dict], None]):
+        """Set the callback function for link statistics.
+
+        Args:
+            callback: Function that receives parsed link statistics dictionary
+                     Signature: callback(stats: dict) -> None
+        """
+        self.link_stats_callback = callback
 
     def update_channels(self, channels: List[int], channels_are_1000_2000: bool = True):
         """
@@ -149,10 +165,14 @@ class CRSFStateMachine:
         This should be called frequently from the main loop.
 
         Logic:
+        - Process incoming bytes and decode CRSF frames
         - If in failsafe: only send non-RC frames back-to-back
         - If not in failsafe and have queued frames: alternate between non-RC and RC
         - If no non-RC frames: send RC frames back-to-back (unless in failsafe)
         """
+        # Process incoming serial data
+        self._process_incoming_frames()
+        
         # Check if it's time to send something
         if not self.is_time_to_send_frame():
             return
@@ -163,8 +183,8 @@ class CRSFStateMachine:
                 frame = self.output_queue.popleft()
                 self.last_frame_time = time.time()
                 self.last_was_rc = False
-                if self.send_callback:
-                    self.send_callback(frame)
+                if self.serial_port:
+                    self.serial_port.write(frame)
                 return
             # In failsafe with no queued frames: don't send anything
             return
@@ -176,8 +196,8 @@ class CRSFStateMachine:
                 frame = self.output_queue.popleft()
                 self.last_frame_time = time.time()
                 self.last_was_rc = False
-                if self.send_callback:
-                    self.send_callback(frame)
+                if self.serial_port:
+                    self.serial_port.write(frame)
                 return
             else:
                 # Last was not RC (or first frame), send RC frame
@@ -185,8 +205,8 @@ class CRSFStateMachine:
                 self.last_frame_time = time.time()
                 self.rc_frames_sent += 1
                 self.last_was_rc = True
-                if self.send_callback:
-                    self.send_callback(frame)
+                if self.serial_port:
+                    self.serial_port.write(frame)
                 return
 
         # Case 3: No queued frames - send RC frames back-to-back
@@ -194,8 +214,8 @@ class CRSFStateMachine:
         self.last_frame_time = time.time()
         self.rc_frames_sent += 1
         self.last_was_rc = True
-        if self.send_callback:
-            self.send_callback(frame)
+        if self.serial_port:
+            self.serial_port.write(frame)
 
     def get_stats(self) -> dict:
         """
@@ -226,3 +246,44 @@ class CRSFStateMachine:
         self.last_was_rc = False
         self.output_queue.clear()
         self.channels = [992] * 16  # Reset to center
+
+    def _process_incoming_frames(self):
+        """
+        Process incoming bytes from serial and decode CRSF frames.
+        
+        Reads available bytes and pushes them through the frame decoder.
+        Handles decoded frames based on their type.
+        """
+        if not self.serial_port:
+            return
+        
+        # Process all available bytes
+        while self.serial_port.available() > 0:
+            byte = self.serial_port.read()
+            if byte < 0:  # No data or error
+                break
+            
+            frame = self.frame_decoder.push_byte(byte)
+            if frame is not None:
+                # CRSF frame decoded - process it
+                self._handle_received_frame(frame)
+    
+    def _handle_received_frame(self, frame: dict):
+        """
+        Handle a received and decoded CRSF frame.
+        
+        Args:
+            frame: Decoded frame dictionary with 'type', 'payload', 'valid', etc.
+        """
+        # Only process frames with valid CRC
+        if not frame.get('valid', False):
+            return
+        
+        frame_type = frame.get('type')
+        
+        # Handle link statistics frame (0x14)
+        if frame_type == CRSF_FRAMETYPE_LINK_STATISTICS:
+            # Parse link statistics
+            stats = parse_link_statistics(frame.get('payload', b''))
+            if stats and self.link_stats_callback:
+                self.link_stats_callback(stats)

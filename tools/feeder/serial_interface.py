@@ -91,17 +91,49 @@ class SerialInterface(QtCore.QObject):
         self.baud = baud
         self._connect()
 
-    def send_crsf_frame(self, frame: bytes):
-        """Send a CRSF frame to the serial port.
+    def available(self) -> int:
+        """Check how many bytes are available to read.
 
-        Args:
-            frame: Complete CRSF frame bytes to send
+        Returns:
+            Number of bytes in the receive buffer
         """
         if self.ser:
             try:
-                self.ser.write(frame)
+                return self.ser.in_waiting
             except Exception as e:
-                self.debug.emit(f"Error sending CRSF frame: {e}")
+                self.debug.emit(f"Error checking available bytes: {e}")
+        return 0
+
+    def read(self) -> int:
+        """Read a single byte from the serial port.
+
+        Returns:
+            Single byte (0-255) or -1 if no data available
+        """
+        if self.ser:
+            try:
+                data = self.ser.read(1)
+                if len(data) > 0:
+                    return data[0]
+            except Exception as e:
+                self.debug.emit(f"Error reading from serial: {e}")
+        return -1
+
+    def write(self, data: bytes) -> int:
+        """Write bytes to the serial port.
+
+        Args:
+            data: Bytes to write
+
+        Returns:
+            Number of bytes written, or 0 on error
+        """
+        if self.ser:
+            try:
+                return self.ser.write(data)
+            except Exception as e:
+                self.debug.emit(f"Error writing to serial: {e}")
+        return 0
 
     def close(self):
         """Close the serial connection and stop the thread."""

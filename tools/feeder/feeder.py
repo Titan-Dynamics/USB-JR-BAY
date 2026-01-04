@@ -179,9 +179,10 @@ class Main(QtWidgets.QWidget):
         self.serThread.debug.connect(self.onDebug)
         self.serThread.connection_status.connect(self.onConnectionStatus)
 
-        # CRSF state machine - handles frame transmission at 250Hz
+        # CRSF state machine - handles frame transmission and reception at 250Hz
         self.crsf_state_machine = CRSFStateMachine()
-        self.crsf_state_machine.set_send_callback(self.serThread.send_crsf_frame)
+        self.crsf_state_machine.set_serial(self.serThread)
+        self.crsf_state_machine.set_link_stats_callback(self.onLinkStats)
 
         # Main content: channels on left, visualizers on right
         content_layout = QtWidgets.QHBoxLayout()
@@ -512,6 +513,54 @@ class Main(QtWidgets.QWidget):
                 self.joyStatusLabel.setStyleSheet("color: white; font-weight: bold;")
         except Exception:
             pass
+
+    def onLinkStats(self, stats: dict):
+        """Update UI and CSV logging with received link statistics.
+        
+        Args:
+            stats: Parsed link statistics dictionary from CRSF protocol
+        """
+        try:
+            # Map CRSF link stats fields to UI labels
+            # uplink_rssi_1 -> 1RSS, uplink_rssi_2 -> 2RSS
+            # uplink_link_quality -> LQ, uplink_snr -> RSNR
+            # rf_mode -> RFMD, uplink_tx_power -> TPWR
+            # downlink_rssi -> TRSS, downlink_link_quality -> TLQ, downlink_snr -> TSNR
+            
+            mapping = {
+                '1RSS': -stats.get('uplink_rssi_1', 0),  # Inverted as per spec
+                '2RSS': -stats.get('uplink_rssi_2', 0),  # Inverted as per spec
+                'LQ': stats.get('uplink_link_quality', 0),
+                'RSNR': stats.get('uplink_snr', 0),
+                'RFMD': stats.get('rf_mode', 0),
+                'TPWR': stats.get('uplink_tx_power', 0),
+                'TRSS': -stats.get('downlink_rssi', 0),  # Inverted as per spec
+                'TLQ': stats.get('downlink_link_quality', 0),
+                'TSNR': stats.get('downlink_snr', 0),
+            }
+            
+            # Update UI labels
+            for key, value in mapping.items():
+                if key in self.telLabels:
+                    label = self.telLabels[key]
+                    # Format based on field type
+                    if 'RSS' in key:
+                        label.setText(f"{value} dBm")
+                    elif 'SNR' in key:
+                        label.setText(f"{value} dB")
+                    elif key in ('LQ', 'TLQ'):
+                        label.setText(f"{value}%")
+                    else:
+                        label.setText(str(value))
+                    
+                    # Set color to white (data received)
+                    label.setStyleSheet("color: white;")
+            
+            # Store for CSV logging
+            self.csv_latest_telemetry = mapping
+            
+        except Exception as e:
+            self.onDebug(f"Error updating link stats: {e}")
 
     def _update_gui(self, ch, axes, btns, joystick_connected):
         """Update GUI elements with computed channel values.
@@ -866,17 +915,13 @@ class Main(QtWidgets.QWidget):
             # Create row with timestamp
             row = {'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]}
 
-            # Add link stats (get latest from telemetry labels)
+            # Add link stats from latest telemetry (stored by onLinkStats callback)
             link_stats_fields = ['1RSS', '2RSS', 'LQ', 'RSNR', 'RFMD', 'TPWR', 'TRSS', 'TLQ', 'TSNR']
             for field in link_stats_fields:
-                try:
-                    text = self.telLabels.get(field, QtWidgets.QLabel("--")).text()
-                    # Extract numeric value (remove units)
-                    if text and text != "--":
-                        row[field] = text.split()[0]  # Get first token (the number)
-                    else:
-                        row[field] = ''
-                except Exception:
+                # Use stored telemetry data if available
+                if field in self.csv_latest_telemetry:
+                    row[field] = self.csv_latest_telemetry[field]
+                else:
                     row[field] = ''
 
             # Add channel values (only for mapped channels)
