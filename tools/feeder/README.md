@@ -160,7 +160,7 @@ The heart of serial communication and CRSF frame handling.
 - Parameter loading (chunked reads with retry logic)
 - Parameter writing with validation
 - Telemetry extraction from LINK_STATISTICS frames
-- Channel transmission (rate-limited to SEND_HZ)
+- Channel transmission (rate-limited to UPDATE_RATE_HZ)
 - Timing synchronization with TX module
 
 **Signals (Qt):**
@@ -470,9 +470,8 @@ ELRS uses the Crossfire (CRSF) protocol for RC channels, telemetry, and configur
 ### Addresses
 
 - `0xC8` - Flight controller (dest for RC channels)
-- `0xEA` - Transmitter
-- `0xEE` - Transmitter
-- `0xEE` - ELRS LUA (parameter interface)
+- `0xEE` - CRSF Transmitter (TX module)
+- `0xEF` - ELRS LUA (parameter interface)
 
 ### Channel Encoding
 

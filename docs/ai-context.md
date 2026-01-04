@@ -551,8 +551,8 @@ tools/feeder/
 
 **Protocol Constants**:
 - `CRSF_ADDRESS_FLIGHT_CONTROLLER = 0xC8` - FC address (sync byte)
-- `CRSF_ADDRESS_CRSF_TRANSMITTER = 0xEE` - TX module (new address)
-- `CRSF_ADDRESS_TRANSMITTER_LEGACY = 0xEA` - TX module (legacy address)
+- `CRSF_ADDRESS_CRSF_TRANSMITTER = 0xEE` - TX module
+- `CRSF_ADDRESS_RADIO = 0xEA` - Handset
 - `CRSF_ADDRESS_ELRS_LUA = 0xEF` - Lua script destination
 - Frame types: `0x16` (RC), `0x14` (Link Stats), `0x28` (Ping), `0x29` (Device Info), `0x2B` (Param Entry), `0x2C` (Param Read), `0x2D` (Param Write)
 
@@ -843,3 +843,17 @@ python tools/feeder/feeder.py
 - [EdgeTX GitHub](https://github.com/EdgeTX/edgetx)
 - [CRSF Protocol Spec](https://github.com/crsf-wg/crsf/wiki)
 - ESP32-S3 Technical Reference Manual (GPIO Matrix, UART)
+
+---
+
+## To Fix
+
+- [ ] Switching the serial port combo often breaks
+- [ ] Refresh button on port combo should be enabled all the time otherwise cant discover new / changed ports without a reboot of the GUI
+- [x] Packet rate doesn't load in param reads
+- [x] Empty param values don't get handled properly (v4.0 pkt params dont load correctly)
+- [x] Params gets pull with wrong origin address, and 2x addresses
+- [x] Need to handle cmd responses
+- [x] CSV logging error: 'Main' object has no attribute 'last_log_time'
+- [x] Seem to be getting DEVICE_INFO twice on device ping
+- [ ] Triggering wifi causes endless param read loop

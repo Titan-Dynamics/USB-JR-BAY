@@ -43,7 +43,7 @@ TELEMETRY_UNIT_MAP = {
     'TPWR': 'mW',
 }
 
-SEND_HZ = 500  # Main loop frequency (joystick reading + GUI updates)
+UPDATE_RATE_HZ = 500  # 500Hz main loop frequency (joystick reading + GUI updates)
 
 def tpwr_to_mw(crsfpower):
     return {1: "10", 2: "25", 3: "100", 4: "500", 5: "1000",
@@ -173,6 +173,8 @@ class Main(QtWidgets.QWidget):
         self.csv_buffer = []  # Buffer for CSV rows (max 600 lines)
         self.csv_last_write_time = 0.0  # Track last write time for 10Hz throttling
         self.csv_start_time = None  # Track when logging started for filename
+        self.last_log_time = 0.0  # Track last log time for throttling CSV log calls
+        self.csv_latest_telemetry = {}  # Store latest telemetry data for CSV logging
         # Fieldnames: timestamp, channels 1-16, then link stats
         self.csv_fieldnames = ['timestamp'] + [f'CH{i+1}' for i in range(CHANNELS)] + ['1RSS', '2RSS', 'LQ', 'RSNR', 'RFMD', 'TPWR', 'TRSS', 'TLQ', 'TSNR']
 
@@ -497,7 +499,7 @@ class Main(QtWidgets.QWidget):
         # Start main tick timer at 500Hz (2ms interval)
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
-        self.timer.start(int(1000 / SEND_HZ))
+        self.timer.start(int(1000 / UPDATE_RATE_HZ))
 
         # Schedule initial connection attempt after GUI is shown
         def attempt_initial_connection():
@@ -525,12 +527,9 @@ class Main(QtWidgets.QWidget):
                 # Update module status if we have device info
                 try:
                     tx_name = None
-                    for addr in [CRSF_ADDRESS_CRSF_TRANSMITTER, CRSF_ADDRESS_TRANSMITTER_LEGACY]:
-                        dev = self.serThread.elrs_devices.get(addr, {})
-                        if dev and isinstance(dev, dict):
-                            tx_name = dev.get('name')
-                            if tx_name:
-                                break
+                    dev = self.serThread.elrs_devices.get(CRSF_ADDRESS_CRSF_TRANSMITTER, {})
+                    if dev and isinstance(dev, dict):
+                        tx_name = dev.get('name')
                     if tx_name:
                         self._module_status = tx_name
                     else:
@@ -564,6 +563,9 @@ class Main(QtWidgets.QWidget):
                     except Exception:
                         text = str(v)
                     self.telLabels[k].setText(text)
+            
+            # Store latest telemetry for CSV logging
+            self.csv_latest_telemetry = d.copy()
         except Exception as e:
             self.onDebug(f"onTel error: {e}")
 
@@ -689,8 +691,10 @@ class Main(QtWidgets.QWidget):
                         if src != "none" and i < len(ch):
                             row_data[f'CH{i+1}'] = ch[i]
 
-                    # Add link stats
-                    row_data.update(self.csv_latest_telemetry)
+                    # Add link stats (only fields that are in csv_fieldnames)
+                    for key, value in self.csv_latest_telemetry.items():
+                        if key in self.csv_fieldnames:
+                            row_data[key] = value
 
                     # Write row to buffer
                     self.csv_buffer.append(row_data)
@@ -1214,7 +1218,7 @@ class Main(QtWidgets.QWidget):
         name = details.get('name', 'Unknown')
         try:
             # Only set current_device_id for TX modules, not receivers
-            if src in (CRSF_ADDRESS_CRSF_TRANSMITTER, CRSF_ADDRESS_TRANSMITTER_LEGACY):
+            if src == CRSF_ADDRESS_CRSF_TRANSMITTER:
                 self.serThread.current_device_id = src
                 # Update the module name in tab title
                 try:
@@ -1341,8 +1345,23 @@ class Main(QtWidgets.QWidget):
                                         pass
                                 widget.setCurrentIndex(target_idx)
                             else:
-                                # For selection type (9), dev_value is the index
-                                widget.setCurrentIndex(int(dev_value))
+                                # For selection type (9), dev_value is the original index
+                                # Convert to display index using stored mapping
+                                original_idx = int(dev_value)
+                                original_to_display = {}
+                                display_to_original = widget.property("display_to_original")
+                                if display_to_original:
+                                    # Reverse the mapping
+                                    for disp_idx, orig_idx in display_to_original.items():
+                                        original_to_display[orig_idx] = disp_idx
+                                    if original_idx in original_to_display:
+                                        widget.setCurrentIndex(original_to_display[original_idx])
+                                    else:
+                                        # Fallback if mapping not found
+                                        widget.setCurrentIndex(min(original_idx, widget.count() - 1))
+                                else:
+                                    # No mapping stored, use original behavior
+                                    widget.setCurrentIndex(original_idx)
                             widget.blockSignals(False)
                         elif isinstance(widget, QtWidgets.QSpinBox):
                             try:
@@ -1389,8 +1408,23 @@ class Main(QtWidgets.QWidget):
                                     pass
                             widget.setCurrentIndex(target_idx)
                         else:
-                            # For selection type (9), dev_value is the index
-                            widget.setCurrentIndex(int(dev_value))
+                            # For selection type (9), dev_value is the original index
+                            # Convert to display index using stored mapping
+                            original_idx = int(dev_value)
+                            original_to_display = {}
+                            display_to_original = widget.property("display_to_original")
+                            if display_to_original:
+                                # Reverse the mapping
+                                for disp_idx, orig_idx in display_to_original.items():
+                                    original_to_display[orig_idx] = disp_idx
+                                if original_idx in original_to_display:
+                                    widget.setCurrentIndex(original_to_display[original_idx])
+                                else:
+                                    # Fallback if mapping not found
+                                    widget.setCurrentIndex(min(original_idx, widget.count() - 1))
+                            else:
+                                # No mapping stored, use original behavior
+                                widget.setCurrentIndex(original_idx)
                         widget.blockSignals(False)
                     elif isinstance(widget, QtWidgets.QSpinBox) and dev_value is not None:
                         try:
@@ -1568,21 +1602,47 @@ class Main(QtWidgets.QWidget):
                     label = QtWidgets.QLabel(f"{name}:")
                     combo = NoWheelComboBox()
                     values = field.get('values', [])
+
+                    # Build mapping between original index (with empty values) and display index (without empty values)
+                    # This matches the behavior in scan.js which skips empty values during rendering
+                    original_to_display = {}  # Maps original index -> display index
+                    display_to_original = {}  # Maps display index -> original index
+                    display_idx = 0
+
                     # If this field has a mapped unit and values are plain numeric strings,
                     # display them with the unit suffix in the UI (but keep the underlying indices the same).
                     try:
                         unit = UNIT_MAP.get(name.strip().lower())
-                        display_values = []
-                        for v in values:
+                        for original_idx, v in enumerate(values):
+                            # Skip empty values (matching scan.js behavior: if (opt.trim().length > 0))
+                            if v.strip() == "":
+                                continue
+
+                            # Map indices
+                            original_to_display[original_idx] = display_idx
+                            display_to_original[display_idx] = original_idx
+
+                            # Add display value
                             if unit and isinstance(v, str) and re.search(r'[A-Za-z%]', v) is None:
                                 # Append unit without whitespace (e.g., 10mW)
-                                display_values.append(f"{v}{unit}")
+                                combo.addItem(f"{v}{unit}")
                             else:
-                                display_values.append(v)
-                        combo.addItems(display_values)
+                                combo.addItem(v)
+                            display_idx += 1
                     except Exception:
-                        combo.addItems(values)
-                    # prefer explicit selection index if present
+                        # Fallback: add all non-empty values
+                        for original_idx, v in enumerate(values):
+                            if v.strip() == "":
+                                continue
+                            original_to_display[original_idx] = display_idx
+                            display_to_original[display_idx] = original_idx
+                            combo.addItem(v)
+                            display_idx += 1
+
+                    # Store the mapping in the combo box for use in change handler
+                    combo.setProperty("display_to_original", display_to_original)
+
+                    # prefer explicit selection index if present (this is the original index)
                     sel_idx = field.get('value', field.get('status', 0))
                     try:
                         if isinstance(sel_idx, str):
@@ -1594,15 +1654,23 @@ class Main(QtWidgets.QWidget):
                     if pending:
                         desired, ts = pending
                         try:
-                            if 0 <= int(desired) < len(values):
+                            # Convert original index to display index
+                            desired_original = int(desired)
+                            if desired_original in original_to_display:
                                 combo.blockSignals(True)
-                                combo.setCurrentIndex(int(desired))
+                                combo.setCurrentIndex(original_to_display[desired_original])
                                 combo.blockSignals(False)
                         except Exception:
                             pass
-                    elif 0 <= sel_idx < len(values):
-                        combo.setCurrentIndex(sel_idx)
-                    combo.currentIndexChanged.connect(lambda idx, f=fid: self._on_param_changed(f, idx))
+                    elif sel_idx in original_to_display:
+                        # Convert original index to display index
+                        combo.setCurrentIndex(original_to_display[sel_idx])
+
+                    # Lambda to convert display index back to original index when changed
+                    combo.currentIndexChanged.connect(
+                        lambda display_idx, f=fid, combo=combo:
+                        self._on_param_changed(f, combo.property("display_to_original").get(display_idx, display_idx))
+                    )
                     # Save widget reference for targeted updates
                     try:
                         self._config_field_widgets[int(fid)] = combo
@@ -1755,7 +1823,7 @@ class Main(QtWidgets.QWidget):
         scroll.setWidget(widget)
         layout.addWidget(scroll)
         # Only set current_device_id for TX modules, not receivers
-        if src in (CRSF_ADDRESS_CRSF_TRANSMITTER, CRSF_ADDRESS_TRANSMITTER_LEGACY):
+        if src == CRSF_ADDRESS_CRSF_TRANSMITTER:
             self.current_device_id = src
         module_settings.update()
         self.tabs.update()

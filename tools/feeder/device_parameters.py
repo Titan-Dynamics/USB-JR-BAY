@@ -41,7 +41,12 @@ class DeviceParameterParser:
             return val, off + 1 if off < len(buf) and buf[off] == 0 else off
 
         def read_opts(buf, off):
-            """Read semicolon-separated option list."""
+            """Read semicolon-separated option list.
+
+            IMPORTANT: Keep empty values in the list to preserve index mapping.
+            The value index in the raw data counts ALL entries including empty ones.
+            Empty entries should be filtered during display, not during parsing.
+            """
             vals = []
             cur = []
             while off < len(buf) and buf[off] != 0:
@@ -49,16 +54,16 @@ class DeviceParameterParser:
                 off += 1
                 if b == 59:  # ';'
                     s = bytes(cur).decode(errors="ignore") if cur else ""
-                    if s != "":
-                        vals.append(s.strip())
+                    # Keep empty values to preserve index mapping (like ELRS LUA and scan.js)
+                    vals.append(s.strip())
                     cur = []
                 else:
                     cur.append(b)
             # final
             if cur:
                 s = bytes(cur).decode(errors="ignore")
-                if s != "":
-                    vals.append(s.strip())
+                # Keep empty values to preserve index mapping
+                vals.append(s.strip())
             return vals, (off + 1 if off < len(buf) and buf[off] == 0 else off)
 
         def read_uint(buf, off, size):
