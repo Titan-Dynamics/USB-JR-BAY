@@ -125,26 +125,3 @@ def build_crsf_frame(ftype: int, payload: bytes) -> bytes:
     crc = crc8_d5(bytes([ftype & 0xFF]) + payload)
     frame.append(crc)
     return bytes(frame)
-
-
-def unpack_crsf_channels(payload: bytes) -> list:
-    """Unpack 16 channels from 22-byte CRSF RC_CHANNELS payload.
-
-    Args:
-        payload: 22-byte CRSF channel data
-
-    Returns:
-        List of 16 channel values in microseconds (1000-2000)
-    """
-    chans = []
-    bitbuf = 0
-    bitcount = 0
-    for b in payload:
-        bitbuf |= b << bitcount
-        bitcount += 8
-        while bitcount >= 11 and len(chans) < 16:
-            v = bitbuf & 0x7FF
-            chans.append(crsf_val_to_us(v))
-            bitbuf >>= 11
-            bitcount -= 11
-    return chans
