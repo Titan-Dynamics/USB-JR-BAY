@@ -849,7 +849,7 @@ python tools/feeder/feeder.py
 
 - [ ] Switching the serial port combo often breaks
 - [ ] Refresh button on port combo should be enabled all the time otherwise cant discover new / changed ports without a reboot of the GUI
-- [x] Packet rate doesn't load in param reads
+- [ ] Packet rate doesn't load in param reads
 - [x] Empty param values don't get handled properly (v4.0 pkt params dont load correctly)
 - [x] Params gets pull with wrong origin address, and 2x addresses
 - [x] Need to handle cmd responses
