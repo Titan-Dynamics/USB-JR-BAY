@@ -547,7 +547,6 @@ tools/feeder/
 - `crsf_val_to_us(val)` - Convert 11-bit CRSF → 1000-2000µs
 - `build_crsf_channels_frame(ch16)` - Pack 16 channels into 22-byte RC frame
 - `build_crsf_frame(ftype, payload)` - Generic frame builder
-- `unpack_crsf_channels(payload)` - Unpack 22-byte RC frame to 16 channels
 
 **Protocol Constants**:
 - `CRSF_ADDRESS_FLIGHT_CONTROLLER = 0xC8` - FC address (sync byte)

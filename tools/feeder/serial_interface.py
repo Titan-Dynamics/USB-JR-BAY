@@ -26,13 +26,11 @@ from crsf_protocol import (
     CRSF_FRAMETYPE_PARAMETER_WRITE,
     CRSF_FRAMETYPE_ELRS_STATUS,
     CRSF_ADDRESS_CRSF_TRANSMITTER,
-    CRSF_ADDRESS_TRANSMITTER_LEGACY,
     CRSF_ADDRESS_ELRS_LUA,
     crc8_d5,
     build_crsf_frame,
     build_crsf_channels_frame,
     crsf_val_to_us,
-    unpack_crsf_channels,
 )
 
 from device_parameters import (
@@ -310,17 +308,15 @@ class SerialThread(QtCore.QObject):
                         self.debug.emit("Discovery: sending initial pings to both TX addresses")
                     except Exception:
                         pass
-                    # Send initial pings to both TX addresses to discover all devices
+                    # Send initial ping to discover all devices
                     self._send_crsf_cmd(CRSF_FRAMETYPE_DEVICE_PING, bytes([0x00, CRSF_ADDRESS_CRSF_TRANSMITTER]))
-                    self._send_crsf_cmd(CRSF_FRAMETYPE_DEVICE_PING, bytes([0x00, CRSF_ADDRESS_TRANSMITTER_LEGACY]))
                     # Set awaiting addresses to include both for periodic pings
                     self._awaiting_addresses.add(CRSF_ADDRESS_CRSF_TRANSMITTER)
-                    self._awaiting_addresses.add(CRSF_ADDRESS_TRANSMITTER_LEGACY)
                 elif discovery_ready and self._awaiting_addresses and nowt - self._last_device_ping_time >= self._device_ping_interval:
                     self._last_device_ping_time = nowt
                     # Device ping uses payload: [broadcast_address, target_address]
-                    # If we have awaiting addresses, ping them specifically; otherwise fallback to both
-                    targets = list(self._awaiting_addresses) if self._awaiting_addresses else [CRSF_ADDRESS_CRSF_TRANSMITTER, CRSF_ADDRESS_TRANSMITTER_LEGACY]
+                    # If we have awaiting addresses, ping them specifically; otherwise fallback to TX address
+                    targets = list(self._awaiting_addresses) if self._awaiting_addresses else [CRSF_ADDRESS_CRSF_TRANSMITTER]
                     for tgt in targets:
                         try:
                             self.debug.emit(f"Discovery: sending ping to 0x{tgt:02X} (awaiting={list(self._awaiting_addresses)})")
@@ -333,13 +329,13 @@ class SerialThread(QtCore.QObject):
                     if time.time() >= self.fieldTimeout:
                         # Send next parameter read with fieldChunk
                         field_id = self.loadQ[-1]
-                        # IMPORTANT: Only poll TX modules (0xEE/0xEA), never receivers
+                        # IMPORTANT: Only poll TX modules (0xEE), never receivers
                         if self.current_device_id in self.elrs_devices:
                             device_id = self.current_device_id
                         else:
                             # Fallback: find first TX module in discovered devices
                             tx_devices = [addr for addr in self.elrs_devices.keys()
-                                        if addr in (CRSF_ADDRESS_CRSF_TRANSMITTER, CRSF_ADDRESS_TRANSMITTER_LEGACY)]
+                                        if addr == CRSF_ADDRESS_CRSF_TRANSMITTER]
                             if tx_devices:
                                 device_id = tx_devices[0]
                             else:
@@ -379,7 +375,7 @@ class SerialThread(QtCore.QObject):
             payload_hex = payload[:20].hex() if len(payload) > 0 else ""
 
         # Auto-trigger one-shot discovery as soon as we see a frame from the TX address
-        if not self._auto_discovery_triggered and src in (CRSF_ADDRESS_CRSF_TRANSMITTER, CRSF_ADDRESS_TRANSMITTER_LEGACY):
+        if not self._auto_discovery_triggered and src == CRSF_ADDRESS_CRSF_TRANSMITTER:
             try:
                 self._trigger_one_shot_discovery(src)
             except Exception as e:
@@ -401,11 +397,6 @@ class SerialThread(QtCore.QObject):
             }
             self.telemetry.emit(r)
             self.last_link_stats_time = time.time()
-        elif t == CRSF_FRAMETYPE_RC_CHANNELS_PACKED and len(payload) >= 22:
-            # Unpack 16 channels from 22-byte CRSF payload
-            chans = unpack_crsf_channels(payload)
-            # Emit channels (microseconds) via a dedicated signal so the GUI can update controls
-            self.channels_update.emit(chans)
         else:
             # Device discovery and parameter frames
             if t == CRSF_FRAMETYPE_DEVICE_INFO:
@@ -424,7 +415,7 @@ class SerialThread(QtCore.QObject):
                     self.debug.emit(f"PARAM_ENTRY parse error: {e}")
                 return
             # If we saw a frame from a TX address, trigger one-shot discovery to pull device info
-            if not self._auto_discovery_triggered and src in (CRSF_ADDRESS_CRSF_TRANSMITTER, CRSF_ADDRESS_TRANSMITTER_LEGACY):
+            if not self._auto_discovery_triggered and src == CRSF_ADDRESS_CRSF_TRANSMITTER:
                 try:
                     self._trigger_one_shot_discovery(src)
                 except Exception as e:
@@ -467,14 +458,12 @@ class SerialThread(QtCore.QObject):
             return
         self._auto_discovery_triggered = True
         # set current device id if known - ONLY for TX modules
-        if src and src in (CRSF_ADDRESS_CRSF_TRANSMITTER, CRSF_ADDRESS_TRANSMITTER_LEGACY):
+        if src and src == CRSF_ADDRESS_CRSF_TRANSMITTER:
             self.current_device_id = src
-        # Always queue both addresses for discovery to ensure we find all devices
+        # Queue TX address for discovery
         self._awaiting_addresses.add(CRSF_ADDRESS_CRSF_TRANSMITTER)
-        self._awaiting_addresses.add(CRSF_ADDRESS_TRANSMITTER_LEGACY)
-        # Send one-shot pings to both addresses (legacy and EE)
+        # Send one-shot ping to TX address
         self._send_crsf_cmd(CRSF_FRAMETYPE_DEVICE_PING, bytes([0x00, CRSF_ADDRESS_CRSF_TRANSMITTER]))
-        self._send_crsf_cmd(CRSF_FRAMETYPE_DEVICE_PING, bytes([0x00, CRSF_ADDRESS_TRANSMITTER_LEGACY]))
 
     def request_parameter_read(self, device_id: int, field_id: int):
         """Request a single parameter read for a given device/field.
@@ -577,9 +566,9 @@ class SerialThread(QtCore.QObject):
         # Build load queue: descending order from fields_count down to 1
         # Build load queue only if n_params > 0 and no queued work already
         # If device already marked loaded, skip reloading
-        # IMPORTANT: Only load parameters from TX module (0xEE/0xEA), NOT from receivers
+        # IMPORTANT: Only load parameters from TX module (0xEE), NOT from receivers
         dev = self.elrs_devices.get(src)
-        is_tx_module = src in (CRSF_ADDRESS_CRSF_TRANSMITTER, CRSF_ADDRESS_TRANSMITTER_LEGACY)
+        is_tx_module = src == CRSF_ADDRESS_CRSF_TRANSMITTER
 
         if not is_tx_module:
             # Receiver or other device - discover it but don't load params
@@ -635,16 +624,6 @@ class SerialThread(QtCore.QObject):
             except Exception:
                 pass
 
-        # If we discovered on an address, remove the counterpart address too
-        try:
-            if src == CRSF_ADDRESS_CRSF_TRANSMITTER:
-                # remove legacy 0xEA if present
-                self._awaiting_addresses.discard(CRSF_ADDRESS_TRANSMITTER_LEGACY)
-            elif src == CRSF_ADDRESS_TRANSMITTER_LEGACY:
-                self._awaiting_addresses.discard(CRSF_ADDRESS_CRSF_TRANSMITTER)
-        except Exception:
-            pass
-
         # If this discovery was triggered by auto-discovery, schedule a parameter read automatically
         if self._auto_discovery_triggered and is_tx_module:
             dev = self.elrs_devices.get(src, None)
@@ -675,7 +654,7 @@ class SerialThread(QtCore.QObject):
         self.debug.emit(f"Param response: field {field_id} from 0x{src:02X}, chunk={self.fieldChunk}, chunks_remain={chunks_remain}, data_len={len(data_bytes)}")
 
         # Ignore responses from non-TX devices (receivers)
-        if src not in (CRSF_ADDRESS_CRSF_TRANSMITTER, CRSF_ADDRESS_TRANSMITTER_LEGACY):
+        if src != CRSF_ADDRESS_CRSF_TRANSMITTER:
             self.debug.emit(f"Ignoring param response from non-TX device 0x{src:02X}")
             return
 
@@ -883,9 +862,8 @@ class SerialThread(QtCore.QObject):
             self._auto_discovery_triggered = False
             self._first_rx_time = None  # Reset discovery delay timer
             self._awaiting_addresses.clear()
-            # queue both addresses so pings will fire
+            # queue TX address so pings will fire
             self._awaiting_addresses.add(CRSF_ADDRESS_CRSF_TRANSMITTER)
-            self._awaiting_addresses.add(CRSF_ADDRESS_TRANSMITTER_LEGACY)
             self.elrs_devices = {}
             # Also clear per-device emitted flags if any
             # reset current device id to default

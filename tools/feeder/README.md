@@ -116,7 +116,6 @@ Pure protocol implementation with no dependencies on other modules.
 - `build_crsf_channels_frame(channels)` - Build RC channels frame (11-bit packed)
 - `us_to_crsf_val(us)` - Convert microseconds (1000-2000) to CRSF (172-1811)
 - `crsf_val_to_us(val)` - Convert CRSF value back to microseconds
-- `unpack_crsf_channels(payload)` - Unpack 11-bit channel data
 
 **Constants:**
 - Frame types (RC_CHANNELS, LINK_STATISTICS, DEVICE_INFO, etc.)
