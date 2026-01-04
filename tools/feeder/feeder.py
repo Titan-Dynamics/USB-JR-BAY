@@ -17,11 +17,12 @@ from PyQt5.QtGui import QIcon, QPalette, QColor, QPixmap, QPainter, QPolygon, QP
 from PyQt5.QtCore import QPoint, Qt, QSettings
 
 # Import from refactored modules
-from serial_interface import SerialThread
+from serial_interface import SerialInterface, get_available_ports
 from joystick_handler import JoystickHandler
 from channel_ui import ChannelRow, SRC_CHOICES
-from config_manager import ConfigManager, get_available_ports, DEFAULT_BAUD, CHANNELS, DEFAULT_CFG
+from config_manager import ConfigManager, DEFAULT_BAUD, CHANNELS, DEFAULT_CFG
 from version import VERSION, GIT_SHA
+from crsf_state_machine import CRSFStateMachine
 
 UPDATE_RATE_HZ = 500  # 500Hz main loop frequency (joystick reading + GUI updates)
 
@@ -171,12 +172,16 @@ class Main(QtWidgets.QWidget):
         self.joy.status.connect(self.onDebug)
         self.joy.status.connect(self.onJoyStatus)
 
-        # Serial thread - just maintains port connection
-        self.serThread = SerialThread(self.cfg["serial_port"], DEFAULT_BAUD)
+        # Serial interface - manages port connection
+        self.serThread = SerialInterface(self.cfg["serial_port"], DEFAULT_BAUD)
         self.thread = threading.Thread(target=self.serThread.run, daemon=True)
         self.thread.start()
         self.serThread.debug.connect(self.onDebug)
         self.serThread.connection_status.connect(self.onConnectionStatus)
+
+        # CRSF state machine - handles frame transmission at 250Hz
+        self.crsf_state_machine = CRSFStateMachine()
+        self.crsf_state_machine.set_send_callback(self.serThread.send_crsf_frame)
 
         # Main content: channels on left, visualizers on right
         content_layout = QtWidgets.QHBoxLayout()
@@ -313,7 +318,7 @@ class Main(QtWidgets.QWidget):
         # Telemetry
         tel = QtWidgets.QHBoxLayout()
         self.telLabels = {}
-        for key in ["1RSS","2RSS","RSNR","TRSS","TSNR","LQ","TLQ","RFMD","TPWR"]:
+        for key in ["LQ","TLQ","1RSS","2RSS","TRSS","RSNR","TSNR","RFMD","TPWR"]:
             box = QtWidgets.QGroupBox(key)
             lab = QtWidgets.QLabel("--")
             lab.setAlignment(QtCore.Qt.AlignCenter | QtCore.Qt.AlignVCenter)
@@ -467,8 +472,6 @@ class Main(QtWidgets.QWidget):
             try:
                 self.jrBayStatusLabel.setText("Connected")
                 self.jrBayStatusLabel.setStyleSheet("color: white; font-weight: bold;")
-                # Disable refresh button while connected to prevent port switching issues
-                self.refreshPortBtn.setEnabled(False)
                 # Update port combo to show the connected port
                 connected_port = self.serThread.port
                 if connected_port:
@@ -487,8 +490,6 @@ class Main(QtWidgets.QWidget):
             try:
                 self.jrBayStatusLabel.setText("Disconnected")
                 self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
-                # Re-enable refresh button when disconnected
-                self.refreshPortBtn.setEnabled(True)
             except Exception:
                 pass
 
@@ -550,7 +551,7 @@ class Main(QtWidgets.QWidget):
     def tick(self):
         """Main update loop at 500Hz.
 
-        Reads joystick, computes channels, updates GUI, and sends to SerialThread.
+        Reads joystick, computes channels, updates GUI, and sends frames via serial.
         """
         # Read joystick input
         axes, btns = self.joy.read()
@@ -561,9 +562,12 @@ class Main(QtWidgets.QWidget):
         # Compute channels from joystick (includes toggle group enforcement)
         ch = self.joy.compute_channels(axes, btns)
 
-        # Send channels to SerialThread for CRSF transmission at 250Hz
+        # Update CRSF state machine with channel values
         if joystick_connected:
-            self.serThread.update_channels(ch)
+            self.crsf_state_machine.update_channels(ch, channels_are_1000_2000=True)
+
+        # Run CRSF state machine to send frames at 250Hz
+        self.crsf_state_machine.run()
 
         # Update GUI visualizers and bars
         self._update_gui(ch, axes, btns, joystick_connected)

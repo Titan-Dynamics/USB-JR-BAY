@@ -469,8 +469,6 @@ tools/feeder/
   - Link statistics display (RSSI, LQ, SNR, TX power)
   - Console logging (collapsible debug output)
   - CSV data logging (10Hz telemetry + channels)
-  - Device discovery and parameter management
-  - Module configuration tab (TX module parameters)
 
 **Key Features**:
 - **Dark Theme**: Custom Qt stylesheet with dark title bar on Windows
@@ -482,18 +480,18 @@ tools/feeder/
 - **CSV Logging**: Captures channels + link stats at 10Hz, buffers 600 lines before flush
 - **Failsafe Indicator**: Shows ESP32 connection status (red when disconnected)
 
-**Update Loop** (`tick()` @ 60Hz):
+**Update Loop** (`tick()` @ 500Hz):
 - Read joystick input via `JoystickHandler`
 - Compute channel values from mappings
 - Enforce toggle group exclusivity
 - Update visualizers and progress bars
-- Send channels to `SerialThread` (decoupled)
+- Send channels to CRSF state machine (decoupled)
 - Monitor TX heartbeat (link stats timeout)
 - Log to CSV if enabled
 
 #### 2. Serial Interface (serial_interface.py)
 
-**Purpose**: Manages all serial communication with ESP32 in a background thread
+**Purpose**: Manages all serial communication with ESP32
 
 **Main Class**: `SerialThread(QtCore.QObject)`
 - **Responsibilities**:
@@ -725,32 +723,6 @@ tools/feeder/
 └─ RC_CHANNELS_PACKED → channels_update signal → Channel Bars
 ```
 
-### Module Configuration Tab
-
-**Purpose**: Configure TX module parameters (packet rate, power, etc.)
-
-**UI Generation**:
-- Dynamically populated from device parameter fields
-- Supports field types:
-  - Type 9 (selection): QComboBox with options
-  - Type 0-8 (numeric): QComboBox with min/max/step range
-  - Type 11 (folder): QGroupBox container
-  - Type 12 (string info): QLabel (read-only)
-  - Type 13 (command): QPushButton
-
-**Parameter Writes**:
-- User changes dropdown → `_on_param_changed(fid, value)`
-- Builds `PARAMETER_WRITE` payload: `[device_id, ELRS_LUA, fid, value]`
-- Queued to serial thread (sent in place of next RC frame)
-- Tracked in `_pending_param_writes` dict to prevent UI overwrite
-- Special handling for RF Band changes (triggers Packet Rate reload)
-
-**Parameter Refresh**:
-- "Refresh" button triggers full device reload
-- Clears existing fields and fetched set
-- Rebuilds load queue from N down to 1
-- Shows progress bar during reload
-
 ### CSV Logging
 
 **Purpose**: Record telemetry and channel data for analysis
@@ -767,50 +739,11 @@ tools/feeder/
 - Samples at 10Hz (100ms interval)
 - Flushes buffer on app close or logging disabled
 
-### Error Handling
+### Testing
 
-**Serial Disconnects**:
-- Auto-reconnect with 500ms retry interval
-- Resets discovery state on disconnect
-- Clears device info and parameters
-- Updates UI to show "Disconnected" status
-
-**Joystick Disconnects**:
-- Stops sending RC frames (failsafe on ESP32)
-- Shows "Scanning for controller..." status
-- Auto-reconnects when joystick plugged back in
-
-**Parameter Read Failures**:
-- Validates chunk sequence numbers (Lua-style)
-- Retries up to 3 times on corruption
-- Logs errors to console
-- Marks field as fetched even if failed (prevents infinite loops)
-
-**TX Module Timeout**:
-- Monitors link stats reception
-- If no stats for >2s, marks TX as disconnected
-- Resets discovery state
-- Sends new pings when stats resume
-
-### Threading Model
-
-**Main Thread** (Qt Event Loop):
-- GUI rendering and event handling
-- Joystick input reading (60Hz)
-- Channel computation
-- UI updates (visualizers, bars, labels)
-
-**Serial Thread** (Background):
-- CRSF frame TX/RX at 250Hz
-- Device discovery state machine
-- Parameter loading queue processing
-- Emits Qt signals for cross-thread communication
-
-**Thread Safety**:
-- Channel buffer protected by `channels_lock` mutex
-- Pending command queue protected by `_pending_cmd_lock` mutex
-- Qt signals used for all cross-thread communication
-- No shared mutable state between threads
+Use:
+`python -m unittest test.test_crsf_state_machine -v`
+to run python tests.
 
 ### Build and Distribution
 
@@ -842,17 +775,3 @@ python tools/feeder/feeder.py
 - [EdgeTX GitHub](https://github.com/EdgeTX/edgetx)
 - [CRSF Protocol Spec](https://github.com/crsf-wg/crsf/wiki)
 - ESP32-S3 Technical Reference Manual (GPIO Matrix, UART)
-
----
-
-## To Fix
-
-- [ ] Switching the serial port combo often breaks
-- [ ] Refresh button on port combo should be enabled all the time otherwise cant discover new / changed ports without a reboot of the GUI
-- [ ] Packet rate doesn't load in param reads
-- [x] Empty param values don't get handled properly (v4.0 pkt params dont load correctly)
-- [x] Params gets pull with wrong origin address, and 2x addresses
-- [x] Need to handle cmd responses
-- [x] CSV logging error: 'Main' object has no attribute 'last_log_time'
-- [x] Seem to be getting DEVICE_INFO twice on device ping
-- [ ] Triggering wifi causes endless param read loop

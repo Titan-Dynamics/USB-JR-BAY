@@ -1,17 +1,29 @@
 """
 Serial Interface Module
 
-Minimal serial port connection management (no CRSF, no telemetry, no parameters).
-Just connects to the port and reports connection status.
+Handles serial port connection management and raw frame transmission.
 """
 
 import time
 import serial
+import serial.tools.list_ports
 from PyQt5 import QtCore
 
 
-class SerialThread(QtCore.QObject):
-    """Thread object for managing serial port connection.
+def get_available_ports():
+    """Get list of available serial ports.
+
+    Returns:
+        List of tuples (port, description)
+    """
+    ports = []
+    for port, desc, hwid in sorted(serial.tools.list_ports.comports()):
+        ports.append((port, desc))
+    return ports
+
+
+class SerialInterface(QtCore.QObject):
+    """Object for managing serial port connection.
 
     This class handles:
     - Serial port connection/reconnection
@@ -79,6 +91,18 @@ class SerialThread(QtCore.QObject):
         self.baud = baud
         self._connect()
 
+    def send_crsf_frame(self, frame: bytes):
+        """Send a CRSF frame to the serial port.
+
+        Args:
+            frame: Complete CRSF frame bytes to send
+        """
+        if self.ser:
+            try:
+                self.ser.write(frame)
+            except Exception as e:
+                self.debug.emit(f"Error sending CRSF frame: {e}")
+
     def close(self):
         """Close the serial connection and stop the thread."""
         self.running = False
@@ -87,16 +111,6 @@ class SerialThread(QtCore.QObject):
                 self.ser.close()
         except:
             pass
-
-    def update_channels(self, channels):
-        """Receive computed channel values from main GUI thread.
-
-        This method exists for compatibility but does nothing (we don't send data).
-
-        Args:
-            channels: List of 16 channel values (1000-2000)
-        """
-        pass  # No-op - we don't send anything
 
     def run(self):
         """Main thread loop: maintains connection."""
@@ -109,9 +123,10 @@ class SerialThread(QtCore.QObject):
                 time.sleep(0.5)
                 continue
             try:
-                # Just keep the connection alive, don't read or write
+                # Just keep the connection alive
                 time.sleep(0.1)
             except Exception as e:
+                self.debug.emit(f"Error in serial thread: {e}")
                 self.ser = None
                 self._update_status()
                 time.sleep(0.2)

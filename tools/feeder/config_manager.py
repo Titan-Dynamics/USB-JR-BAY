@@ -6,7 +6,6 @@ This module handles loading and saving application configuration.
 
 import json
 import sys
-import serial.tools.list_ports
 
 
 # Default configuration
@@ -22,18 +21,6 @@ DEFAULT_CFG = {
         for _ in range(CHANNELS)
     ],
 }
-
-
-def get_available_ports():
-    """Get list of available serial ports.
-
-    Returns:
-        List of tuples (port, description)
-    """
-    ports = []
-    for port, desc, hwid in sorted(serial.tools.list_ports.comports()):
-        ports.append((port, desc))
-    return ports
 
 
 class ConfigManager:
