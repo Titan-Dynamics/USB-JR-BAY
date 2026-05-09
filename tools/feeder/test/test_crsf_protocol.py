@@ -9,12 +9,16 @@ Tests cover:
 - Edge cases and error handling
 """
 
+import struct
 import unittest
 from crsf_protocol import (
-    parse_link_statistics, parse_rc_channels,
+    parse_link_statistics, parse_rc_channels, parse_handset_timing,
     CRSFFrameDecoder, crsf_crc8,
     CRSF_FRAMETYPE_LINK_STATISTICS,
-    CRSF_FRAMETYPE_RC_CHANNELS
+    CRSF_FRAMETYPE_RC_CHANNELS,
+    CRSF_SUBCMD_TIMING,
+    convert_channel_1000_2000_to_crsf,
+    CRSF_CHANNEL_MIN, CRSF_CHANNEL_MAX,
 )
 
 
@@ -22,35 +26,41 @@ class TestLinkStatisticsParsing(unittest.TestCase):
     """Test suite for link statistics parsing"""
 
     def test_valid_link_statistics(self):
-        """Test parsing valid link statistics payload"""
-        # Example link stats payload: 10 bytes
-        # RSSI1=100, RSSI2=105, LQ=95, SNR=8, Antenna=0, RFMode=2, TxPwr=20, DRSSI=110, DLQ=98, DSNR=10
-        payload = bytes([100, 105, 95, 8, 0, 2, 20, 110, 98, 10])
-        
+        """Test parsing valid link statistics payload.
+
+        RSSI bytes are interpreted as signed int8 (actual dBm, already negative).
+        Byte 237 → -19 dBm, byte 242 → -14 dBm, byte 232 → -24 dBm.
+        """
+        # RSSI1=-19, RSSI2=-14, LQ=95, SNR=8, Ant=0, RFMode=2, TxPwr=20, DRSSI=-24, DLQ=98, DSNR=10
+        payload = bytes([237, 242, 95, 8, 0, 2, 20, 232, 98, 10])
+
         stats = parse_link_statistics(payload)
-        
+
         self.assertIsNotNone(stats)
-        self.assertEqual(stats['uplink_rssi_1'], 100)
-        self.assertEqual(stats['uplink_rssi_2'], 105)
+        self.assertEqual(stats['uplink_rssi_1'], -19)
+        self.assertEqual(stats['uplink_rssi_2'], -14)
         self.assertEqual(stats['uplink_link_quality'], 95)
         self.assertEqual(stats['uplink_snr'], 8)
         self.assertEqual(stats['active_antenna'], 0)
         self.assertEqual(stats['rf_mode'], 2)
         self.assertEqual(stats['uplink_tx_power'], 20)
-        self.assertEqual(stats['downlink_rssi'], 110)
+        self.assertEqual(stats['downlink_rssi'], -24)
         self.assertEqual(stats['downlink_link_quality'], 98)
         self.assertEqual(stats['downlink_snr'], 10)
 
     def test_negative_snr_values(self):
-        """Test that signed SNR values are correctly parsed"""
-        # SNR values as signed bytes: -5 (251 unsigned) and -10 (246 unsigned)
-        payload = bytes([100, 105, 95, 251, 0, 2, 20, 110, 98, 246])
-        
+        """Test that signed SNR values are correctly parsed."""
+        # SNR: -5 (251 unsigned), -10 (246 unsigned)
+        # RSSI: -19 (237 unsigned), -14 (242 unsigned), -24 (232 unsigned)
+        payload = bytes([237, 242, 95, 251, 0, 2, 20, 232, 98, 246])
+
         stats = parse_link_statistics(payload)
-        
+
         self.assertIsNotNone(stats)
         self.assertEqual(stats['uplink_snr'], -5)
         self.assertEqual(stats['downlink_snr'], -10)
+        self.assertEqual(stats['uplink_rssi_1'], -19)
+        self.assertEqual(stats['downlink_rssi'], -24)
 
     def test_invalid_payload_too_short(self):
         """Test that short payloads return None"""
@@ -274,6 +284,92 @@ class TestCRSFFrameDecoder(unittest.TestCase):
         
         self.assertIsNotNone(result)
         self.assertTrue(result['valid'])
+
+
+class TestChannelClamp(unittest.TestCase):
+    """Test suite for channel clamping at the new 172/1811 rails."""
+
+    def test_clamp_at_min_172(self):
+        """Input below the formula rail is clamped to CRSF_CHANNEL_MIN (172)."""
+        # 900µs → formula gives ((900-1500)*8/5+992) = 32, which is < 172
+        result = convert_channel_1000_2000_to_crsf(900)
+        self.assertEqual(result, CRSF_CHANNEL_MIN)  # 172
+
+    def test_clamp_at_max_1811(self):
+        """Input above the formula rail is clamped to CRSF_CHANNEL_MAX (1811)."""
+        # 2100µs → formula gives ((2100-1500)*8/5+992) = 1952, which is > 1811
+        result = convert_channel_1000_2000_to_crsf(2100)
+        self.assertEqual(result, CRSF_CHANNEL_MAX)  # 1811
+
+    def test_1000us_in_range(self):
+        """1000µs maps to 192, which is within the new [172, 1811] range."""
+        result = convert_channel_1000_2000_to_crsf(1000)
+        self.assertEqual(result, 192)
+        self.assertGreaterEqual(result, CRSF_CHANNEL_MIN)
+
+    def test_2000us_in_range(self):
+        """2000µs maps to 1792, which is within the new [172, 1811] range."""
+        result = convert_channel_1000_2000_to_crsf(2000)
+        self.assertEqual(result, 1792)
+        self.assertLessEqual(result, CRSF_CHANNEL_MAX)
+
+
+class TestParseHandsetTiming(unittest.TestCase):
+    """Test suite for parse_handset_timing."""
+
+    def _build_payload(self, rate_tenth_us: int, offset_tenth_us: int) -> bytes:
+        return bytes([CRSF_SUBCMD_TIMING]) + \
+               struct.pack('>I', rate_tenth_us) + \
+               struct.pack('>i', offset_tenth_us)
+
+    def test_valid_positive_offset(self):
+        """Parse a valid timing frame with a positive offset."""
+        rate_tenth_us = 40000    # 4000µs = 250 Hz
+        offset_tenth_us = 5000   # +500µs
+
+        payload = self._build_payload(rate_tenth_us, offset_tenth_us)
+        result = parse_handset_timing(payload)
+
+        self.assertIsNotNone(result)
+        rate_us, offset_us = result
+        self.assertAlmostEqual(rate_us, 4000.0, places=6)
+        self.assertAlmostEqual(offset_us, 500.0, places=6)
+
+    def test_valid_negative_offset(self):
+        """Parse a valid timing frame with a negative offset."""
+        rate_tenth_us = 20000    # 2000µs = 500 Hz
+        offset_tenth_us = -3000  # -300µs
+
+        payload = self._build_payload(rate_tenth_us, offset_tenth_us)
+        result = parse_handset_timing(payload)
+
+        self.assertIsNotNone(result)
+        rate_us, offset_us = result
+        self.assertAlmostEqual(rate_us, 2000.0, places=6)
+        self.assertAlmostEqual(offset_us, -300.0, places=6)
+
+    def test_wrong_subtype_returns_none(self):
+        """Payload with wrong subType byte returns None."""
+        payload = bytes([0x05]) + struct.pack('>I', 40000) + struct.pack('>i', 0)
+        self.assertIsNone(parse_handset_timing(payload))
+
+    def test_short_payload_returns_none(self):
+        """Payload shorter than 9 bytes returns None."""
+        payload = bytes([CRSF_SUBCMD_TIMING, 0x00, 0x00])  # Only 3 bytes
+        self.assertIsNone(parse_handset_timing(payload))
+
+    def test_empty_payload_returns_none(self):
+        """Empty payload returns None."""
+        self.assertIsNone(parse_handset_timing(b''))
+
+    def test_zero_offset(self):
+        """Zero offset is parsed correctly."""
+        payload = self._build_payload(10000, 0)  # 1000µs = 1kHz, no offset
+        result = parse_handset_timing(payload)
+        self.assertIsNotNone(result)
+        rate_us, offset_us = result
+        self.assertAlmostEqual(rate_us, 1000.0, places=6)
+        self.assertAlmostEqual(offset_us, 0.0, places=6)
 
 
 if __name__ == '__main__':

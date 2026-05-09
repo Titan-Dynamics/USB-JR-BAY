@@ -24,7 +24,8 @@ from config_manager import ConfigManager, DEFAULT_BAUD, CHANNELS, DEFAULT_CFG
 from version import VERSION, GIT_SHA
 from crsf_state_machine import CRSFStateMachine
 
-UPDATE_RATE_HZ = 500  # 500Hz main loop frequency (joystick reading + GUI updates)
+GUI_UPDATE_INTERVAL_S = 1.0 / 60  # ~60 Hz redraws
+CSV_LOG_INTERVAL_S    = 0.1       # 10 Hz CSV logging
 
 
 class NoWheelComboBox(QtWidgets.QComboBox):
@@ -145,6 +146,9 @@ class Main(QtWidgets.QWidget):
         self.cfg = DEFAULT_CFG.copy()
         self._load_cfg()
 
+        # Throttle timestamps for the split-tick design
+        self._last_gui_update = 0.0
+
         # CSV logging setup
         self.csv_filename = None
         self.csv_buffer = []  # Buffer for CSV rows (max 600 lines)
@@ -179,10 +183,11 @@ class Main(QtWidgets.QWidget):
         self.serThread.debug.connect(self.onDebug)
         self.serThread.connection_status.connect(self.onConnectionStatus)
 
-        # CRSF state machine - handles frame transmission and reception at 250Hz
+        # CRSF state machine - handles frame transmission and reception
         self.crsf_state_machine = CRSFStateMachine()
         self.crsf_state_machine.set_serial(self.serThread)
         self.crsf_state_machine.set_link_stats_callback(self.onLinkStats)
+        self.crsf_state_machine.set_sync_callback(self.onSyncStatus)
 
         # Main content: channels on left, visualizers on right
         content_layout = QtWidgets.QHBoxLayout()
@@ -409,6 +414,9 @@ class Main(QtWidgets.QWidget):
         self.jrBayStatusLabel = QtWidgets.QLabel("Disconnected")
         self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
 
+        self.crsfStatusLabel = QtWidgets.QLabel("CRSF: no link")
+        self.crsfStatusLabel.setStyleSheet("color: red; font-weight: bold;")
+
         channels_tab_layout.addLayout(content_layout)
         self.tabs.addTab(channels_tab, "Controller")
 
@@ -434,6 +442,14 @@ class Main(QtWidgets.QWidget):
         top_bar.addWidget(divider2)
 
         top_bar.addWidget(self.jrBayStatusLabel)
+
+        divider3 = QtWidgets.QFrame()
+        divider3.setFrameShape(QtWidgets.QFrame.VLine)
+        divider3.setFrameShadow(QtWidgets.QFrame.Sunken)
+        divider3.setLineWidth(2)
+        top_bar.addWidget(divider3)
+
+        top_bar.addWidget(self.crsfStatusLabel)
         top_bar.addStretch()
         top_bar.addSpacing(32)
         top_bar.addWidget(self.logging_enabled)
@@ -455,10 +471,11 @@ class Main(QtWidgets.QWidget):
         self.joy.set_channel_rows(self.rows)
         self.joy.set_toggle_group_enforcer(self._enforce_toggle_groups)
 
-        # Start main tick timer at 500Hz (2ms interval)
+        # Drive tick as fast as the Qt event queue allows; expensive work is
+        # throttled inside tick() itself via monotonic-time gates.
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
-        self.timer.start(int(1000 / UPDATE_RATE_HZ))
+        self.timer.start(0)
 
         # Schedule initial connection attempt after GUI is shown
         def attempt_initial_connection():
@@ -528,13 +545,13 @@ class Main(QtWidgets.QWidget):
             # downlink_rssi -> TRSS, downlink_link_quality -> TLQ, downlink_snr -> TSNR
             
             mapping = {
-                '1RSS': -stats.get('uplink_rssi_1', 0),  # Inverted as per spec
-                '2RSS': -stats.get('uplink_rssi_2', 0),  # Inverted as per spec
+                '1RSS': stats.get('uplink_rssi_1', 0),    # Already signed dBm
+                '2RSS': stats.get('uplink_rssi_2', 0),    # Already signed dBm
                 'LQ': stats.get('uplink_link_quality', 0),
                 'RSNR': stats.get('uplink_snr', 0),
                 'RFMD': stats.get('rf_mode', 0),
                 'TPWR': stats.get('uplink_tx_power', 0),
-                'TRSS': -stats.get('downlink_rssi', 0),  # Inverted as per spec
+                'TRSS': stats.get('downlink_rssi', 0),    # Already signed dBm
                 'TLQ': stats.get('downlink_link_quality', 0),
                 'TSNR': stats.get('downlink_snr', 0),
             }
@@ -561,6 +578,19 @@ class Main(QtWidgets.QWidget):
             
         except Exception as e:
             self.onDebug(f"Error updating link stats: {e}")
+
+    def onSyncStatus(self, info):
+        """Update the CRSF link-state label (called inline from the GUI tick)."""
+        try:
+            if info is None:
+                self.crsfStatusLabel.setText("CRSF: no link")
+                self.crsfStatusLabel.setStyleSheet("color: red; font-weight: bold;")
+            else:
+                hz = info['rate_hz']
+                self.crsfStatusLabel.setText(f"CRSF: {hz:.0f} Hz")
+                self.crsfStatusLabel.setStyleSheet("color: white; font-weight: bold;")
+        except Exception:
+            pass
 
     def _update_gui(self, ch, axes, btns, joystick_connected):
         """Update GUI elements with computed channel values.
@@ -598,87 +628,100 @@ class Main(QtWidgets.QWidget):
             pass
 
     def tick(self):
-        """Main update loop at 500Hz.
-
-        Reads joystick, computes channels, updates GUI, and sends frames via serial.
         """
-        # Read joystick input
+        Main update loop driven by QTimer(0) — fires as fast as the Qt event
+        queue allows.
+
+        Fast path (every tick): joystick sample, failsafe wiring, CRSF state
+        machine (drains RX, emits due frames).
+
+        Throttled paths: GUI redraws at ~60 Hz; CSV logging at 10 Hz.
+        """
+        now = time.monotonic()
+
+        # ---- Always: latency-sensitive serial + joystick path ----
         axes, btns = self.joy.read()
         self.latest_axes = axes
         self.latest_buttons = btns
         joystick_connected = self.joy.j is not None
 
-        # Compute channels from joystick (includes toggle group enforcement)
         ch = self.joy.compute_channels(axes, btns)
 
-        # Update CRSF state machine with channel values
         if joystick_connected:
             self.crsf_state_machine.update_channels(ch, channels_are_1000_2000=True)
+            self.crsf_state_machine.set_failsafe(False)
+        else:
+            self.crsf_state_machine.set_failsafe(True)
 
-        # Run CRSF state machine to send frames at 250Hz
         self.crsf_state_machine.run()
 
-        # Update GUI visualizers and bars
-        self._update_gui(ch, axes, btns, joystick_connected)
+        # ---- Throttled: GUI redraws (~60 Hz) ----
+        if now - self._last_gui_update >= GUI_UPDATE_INTERVAL_S:
+            self._last_gui_update = now
+            self._update_gui(ch, axes, btns, joystick_connected)
+            self._service_mapping(now, axes, btns)
 
-        # Mapping mode: detect next button press or large axis move
-        if self.mapping_row is not None:
-            try:
-                # Check for timeout first (5 seconds)
-                if time.time() - self.mapping_started_at > 5.0:
-                    # Timeout - reset button
+        # ---- Throttled: CSV logging (10 Hz) ----
+        if (self.logging_enabled.isChecked()
+                and now - self.last_log_time >= CSV_LOG_INTERVAL_S):
+            self.last_log_time = now
+            self._log_to_csv(ch)
+
+    def _service_mapping(self, now: float, axes, btns):
+        """Service the joystick-to-channel mapping flow (called at ~60 Hz)."""
+        if self.mapping_row is None:
+            return
+        try:
+            if now - self.mapping_started_at > 5.0:
+                try:
+                    self.mapping_row.mapBtn.setText("Map")
+                    self.mapping_row.mapBtn.setEnabled(True)
+                except Exception:
+                    pass
+                self.onDebug("Mapping timed out; try again.")
+                self.mapping_row = None
+                return
+
+            base_axes, base_btns = self.mapping_baseline
+            detected = None
+            if btns and base_btns:
+                for i in range(min(len(btns), len(base_btns))):
+                    if base_btns[i] == 0 and btns[i] == 1:
+                        detected = ("button", i)
+                        break
+            if detected is None and axes and base_axes:
+                best_i, best_d = -1, 0.0
+                for i in range(min(len(axes), len(base_axes))):
+                    d = abs(axes[i] - base_axes[i])
+                    if d > best_d:
+                        best_d, best_i = d, i
+                if best_i >= 0 and best_d > 0.35:
+                    detected = ("axis", best_i)
+
+            if detected is not None:
+                src, idx = detected
+                try:
+                    self.mapping_row.set_mapping(src, idx)
+                    self.onDebug(f"Mapped CH{self.mapping_row.idx+1} to {src}[{idx}]")
+                    self.save_cfg()
+                except Exception as e:
+                    self.onDebug(f"Mapping save error: {e}")
+                finally:
                     try:
                         self.mapping_row.mapBtn.setText("Map")
                         self.mapping_row.mapBtn.setEnabled(True)
                     except Exception:
                         pass
-                    self.onDebug("Mapping timed out; try again.")
                     self.mapping_row = None
-                else:
-                    base_axes, base_btns = self.mapping_baseline
-                    detected = None
-                    # Button press has priority
-                    if btns and base_btns:
-                        for i in range(min(len(btns), len(base_btns))):
-                            if base_btns[i] == 0 and btns[i] == 1:
-                                detected = ("button", i)
-                                break
-                    # Axis movement if no button detected
-                    if detected is None and axes and base_axes:
-                        best_i, best_d = -1, 0.0
-                        for i in range(min(len(axes), len(base_axes))):
-                            d = abs(axes[i] - base_axes[i])
-                            if d > best_d:
-                                best_d, best_i = d, i
-                        if best_i >= 0 and best_d > 0.35:
-                            detected = ("axis", best_i)
-
-                    if detected is not None:
-                        src, idx = detected
-                        try:
-                            self.mapping_row.set_mapping(src, idx)
-                            self.onDebug(f"Mapped CH{self.mapping_row.idx+1} to {src}[{idx}]")
-                            self.save_cfg()
-                        except Exception as e:
-                            self.onDebug(f"Mapping save error: {e}")
-                        finally:
-                            # Always reset button, even if save fails
-                            try:
-                                self.mapping_row.mapBtn.setText("Map")
-                                self.mapping_row.mapBtn.setEnabled(True)
-                            except Exception:
-                                pass
-                            self.mapping_row = None
-            except Exception as e:
-                # If any error occurs during mapping, reset the button
-                self.onDebug(f"Mapping error: {e}")
-                try:
-                    if self.mapping_row is not None:
-                        self.mapping_row.mapBtn.setText("Map")
-                        self.mapping_row.mapBtn.setEnabled(True)
-                except Exception:
-                    pass
-                self.mapping_row = None
+        except Exception as e:
+            self.onDebug(f"Mapping error: {e}")
+            try:
+                if self.mapping_row is not None:
+                    self.mapping_row.mapBtn.setText("Map")
+                    self.mapping_row.mapBtn.setEnabled(True)
+            except Exception:
+                pass
+            self.mapping_row = None
 
     def save_cfg(self):
         self.cfg["channels"] = [r.to_cfg() for r in self.rows]
@@ -1012,7 +1055,7 @@ class Main(QtWidgets.QWidget):
 
             self.mapping_row = row
             self.mapping_baseline = (axes, btns)
-            self.mapping_started_at = time.time()
+            self.mapping_started_at = time.monotonic()
             try:
                 row.mapBtn.setText("...")
                 row.mapBtn.setEnabled(False)

@@ -60,7 +60,7 @@ class SerialInterface(QtCore.QObject):
                     self.ser.close()
                 except:
                     pass
-            self.ser = serial.Serial(self.port, self.baud, timeout=0.001, write_timeout=1.0)
+            self.ser = serial.Serial(self.port, self.baud, timeout=0.001, write_timeout=0.05)
             # Flush any stale data from the input buffer
             self.ser.reset_input_buffer()
             self.debug.emit(f"Connected to {self.port} @ {self.baud} baud")
@@ -119,6 +119,23 @@ class SerialInterface(QtCore.QObject):
                 self.debug.emit(f"Error reading from serial: {e}")
         return -1
 
+    def read_bulk(self, n: int) -> bytes:
+        """Read up to n bytes from the serial port in one syscall.
+
+        Args:
+            n: Maximum number of bytes to read
+
+        Returns:
+            Bytes read (may be fewer than n if less is available)
+        """
+        if self.ser:
+            try:
+                data = self.ser.read(n)
+                return data if data else b''
+            except Exception as e:
+                self.debug.emit(f"Error bulk reading from serial: {e}")
+        return b''
+
     def write(self, data: bytes) -> int:
         """Write bytes to the serial port.
 
@@ -131,6 +148,9 @@ class SerialInterface(QtCore.QObject):
         if self.ser:
             try:
                 return self.ser.write(data)
+            except serial.SerialTimeoutException:
+                self.debug.emit("Serial write timeout (transient, will retry)")
+                return 0
             except Exception as e:
                 self.debug.emit(f"Error writing to serial: {e}")
         return 0

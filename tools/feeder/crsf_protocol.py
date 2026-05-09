@@ -19,7 +19,9 @@ from typing import List, Tuple, Optional
 # CRSF Addresses
 CRSF_ADDRESS_BROADCAST = 0x00
 CRSF_ADDRESS_RADIO = 0xEA
+CRSF_ADDRESS_RADIO_TRANSMITTER = 0xEA  # alias for CRSF_ADDRESS_RADIO
 CRSF_ADDRESS_MODULE = 0xEE
+CRSF_ADDRESS_CRSF_TRANSMITTER = 0xEE   # alias for CRSF_ADDRESS_MODULE
 CRSF_SYNC_BYTE = 0xC8
 CRSF_ADDRESS_ELRS_LUA = 0xEF
 CRSF_ADDRESS_RECEIVER = 0xEC
@@ -47,8 +49,8 @@ CRSF_RC_FRAME_LEN = 26
 
 # Channel Constants (from CRSF spec)
 CRSF_CHANNEL_CENTER = 992  # 1500µs
-CRSF_CHANNEL_MIN = 192     # 1000µs -> ((1000 - 1500) * 8 / 5 + 992) = 192
-CRSF_CHANNEL_MAX = 1792    # 2000µs -> ((2000 - 1500) * 8 / 5 + 992) = 1792
+CRSF_CHANNEL_MIN = 172     # ELRS canonical 11-bit min (~988µs)
+CRSF_CHANNEL_MAX = 1811    # ELRS canonical 11-bit max (~2012µs)
 
 # =============================================================================
 # CRC8 Lookup Table (Polynomial 0xD5)
@@ -280,7 +282,7 @@ def build_rc_frame(channels: List[int]) -> bytes:
         raise ValueError(f"Expected 16 channels, got {len(channels)}")
 
     frame = bytearray(26)
-    frame[0] = CRSF_ADDRESS_MODULE  # Destination: Module (0xEE)
+    frame[0] = CRSF_SYNC_BYTE  # 0xC8: matches what USBHandset::forwardMessage writes
     frame[1] = CRSF_RC_CHANNELS_PACKED_LEN + 2  # Length: Type + Payload + CRC
     frame[2] = CRSF_FRAMETYPE_RC_CHANNELS  # Type: RC Channels (0x16)
 
@@ -358,14 +360,14 @@ def parse_link_statistics(payload: bytes) -> Optional[dict]:
         return None
 
     return {
-        'uplink_rssi_1': payload[0],  # dBm (inverted, display as -value)
-        'uplink_rssi_2': payload[1],  # dBm (inverted, display as -value)
+        'uplink_rssi_1': struct.unpack('b', bytes([payload[0]]))[0],  # Signed dBm (already negative)
+        'uplink_rssi_2': struct.unpack('b', bytes([payload[1]]))[0],  # Signed dBm (already negative)
         'uplink_link_quality': payload[2],  # 0-100%
         'uplink_snr': struct.unpack('b', bytes([payload[3]]))[0],  # Signed SNR in dB
         'active_antenna': payload[4],  # 0 or 1
         'rf_mode': payload[5],  # RF mode/rate
-        'uplink_tx_power': payload[6],  # TX power in dBm
-        'downlink_rssi': payload[7],  # dBm (inverted, display as -value)
+        'uplink_tx_power': payload[6],  # TX power in mW/index
+        'downlink_rssi': struct.unpack('b', bytes([payload[7]]))[0],  # Signed dBm (already negative)
         'downlink_link_quality': payload[8],  # 0-100%
         'downlink_snr': struct.unpack('b', bytes([payload[9]]))[0],  # Signed SNR in dB
     }
@@ -385,6 +387,30 @@ def parse_rc_channels(payload: bytes) -> Optional[List[int]]:
         return None
 
     return unpack_channels(payload)
+
+
+def parse_handset_timing(payload: bytes) -> Optional[Tuple[float, float]]:
+    """
+    Parse the body of a CRSF_FRAMETYPE_RADIO_ID (0x3A) timing frame.
+
+    Expects the payload with dest+orig already stripped. Call as:
+        parse_handset_timing(frame['payload'][2:])
+
+    Layout after stripping:
+      [0]      subType (0x10 = CRSF_SUBCMD_TIMING)
+      [1:5]    rate    big-endian uint32, 10ths of µs
+      [5:9]    offset  big-endian  int32, 10ths of µs
+
+    Returns (rate_us, offset_us) in microseconds, or None on mismatch.
+    Positive offset means the packet arrived early — delay next send.
+    """
+    if len(payload) < 9:
+        return None
+    if payload[0] != CRSF_SUBCMD_TIMING:
+        return None
+    rate_tenth_us = struct.unpack('>I', payload[1:5])[0]
+    offset_tenth_us = struct.unpack('>i', payload[5:9])[0]
+    return (rate_tenth_us / 10.0, offset_tenth_us / 10.0)
 
 
 # =============================================================================

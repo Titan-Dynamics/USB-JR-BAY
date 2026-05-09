@@ -10,7 +10,7 @@ import sys
 
 # Default configuration
 DEFAULT_PORT = "COM1" if sys.platform.startswith("win") else "/dev/ttyACM0"
-DEFAULT_BAUD = 5250000
+DEFAULT_BAUD = 420000  # USB-direct to TitanLRS TX; ESP32 bridge used 5_250_000 (still selectable)
 CHANNELS = 16
 
 DEFAULT_CFG = {

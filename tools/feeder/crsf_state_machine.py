@@ -3,11 +3,12 @@ CRSF State Machine Module
 
 This module manages the state machine for sending and receiving CRSF frames.
 It handles:
-- RC frame transmission at regular intervals
+- RC frame transmission at dynamic intervals synced from TX timing packets
 - Queued parameter/command frames
-- Failsafe handling
+- Failsafe handling (silence on joystick disconnect so TX times out)
 
-The state machine is decoupled from UART operations
+The state machine is decoupled from UART operations and must be driven from
+a single thread (the GUI tick loop). No internal threads.
 """
 
 import time
@@ -16,274 +17,230 @@ from collections import deque
 from crsf_protocol import (
     build_rc_frame, build_ping_frame, build_param_request,
     convert_channel_1000_2000_to_crsf, CRSFFrameDecoder,
-    CRSF_FRAMETYPE_LINK_STATISTICS, parse_link_statistics
+    CRSF_FRAMETYPE_LINK_STATISTICS, parse_link_statistics,
+    CRSF_FRAMETYPE_RADIO_ID, parse_handset_timing,
 )
+
+_MAX_CATCHUP = 5
+_LOST_SYNC_AFTER_S = 2.0
 
 
 class CRSFStateMachine:
     """
     State machine for managing CRSF frame transmission.
 
-    This class handles the timing and queuing of different frame types:
-    - Regular RC frames (sent regularly at specified interval)
-    - Queued parameter/command frames (sent in place of RC frames)
-    - Device ping frames
+    Driven from the GUI tick loop (single-threaded). Cumulative scheduling
+    with a catch-up loop handles delayed ticks without dropping frames.
 
     Attributes:
-        rc_interval_ms: Interval between frames in milliseconds
-        failsafe: Whether the system is in failsafe mode
+        _interval_s: Current send interval in seconds (updated by sync packets)
+        failsafe: When True, no frames are sent (TX times out → RX failsafe)
     """
 
-    def __init__(self, rc_interval_ms: int = 4):
+    def __init__(self, interval_s: float = 0.004):
         """
         Initialize the CRSF state machine.
 
         Args:
-            rc_interval_ms: Interval between RC frames in milliseconds (default: 4ms = 250Hz)
+            interval_s: Initial send interval in seconds (default: 0.004 = 250 Hz)
         """
-        self.rc_interval_ms = rc_interval_ms
+        self._interval_s = interval_s
+
+        # Cumulative scheduling
+        self._next_send = 0.0
+        self._last_frame_time = 0.0
+
+        # Sync-lock state
+        self._sync_locked = False
+        self._last_sync_recv = 0.0
 
         # State tracking
-        self.last_frame_time = 0.0
         self.rc_frames_sent = 0
         self.failsafe = False
-        self.last_was_rc = False  # Track if last frame sent was RC (for alternating)
-        
-        # Channel data (CRSF range: 0-1984)
-        self.channels = [992] * 16  # Default to center (992 = CRSF center)
+        self.last_was_rc = False
+
+        # Channel data (CRSF range)
+        self.channels = [992] * 16  # Default: center
 
         # Output frame queue (for params, pings, etc.)
         self.output_queue = deque(maxlen=10)
 
-        # Serial port object (set externally for decoupling)
-        # Expected to have available(), read(), and write() methods
+        # Serial port object (set externally)
         self.serial_port = None
-        
-        # Frame decoder for receiving CRSF frames
+
+        # Frame decoder for incoming CRSF frames
         self.frame_decoder = CRSFFrameDecoder()
-        
-        # Callback for link statistics (set externally)
+
+        # Callbacks (set externally, called on GUI thread)
         self.link_stats_callback: Optional[Callable[[dict], None]] = None
+        self.sync_callback: Optional[Callable[[Optional[dict]], None]] = None
 
     def set_serial(self, serial_port):
-        """Set the serial port object.
-
-        Args:
-            serial_port: Serial port object with available(), read(), and write() methods
-                        (e.g., SerialInterface instance)
-        """
+        """Set the serial port object (must have available(), read_bulk(), write())."""
         self.serial_port = serial_port
 
     def set_link_stats_callback(self, callback: Callable[[dict], None]):
-        """Set the callback function for link statistics.
-
-        Args:
-            callback: Function that receives parsed link statistics dictionary
-                     Signature: callback(stats: dict) -> None
-        """
+        """Set callback for link statistics frames. Signature: callback(stats: dict)."""
         self.link_stats_callback = callback
 
-    def update_channels(self, channels: List[int], channels_are_1000_2000: bool = True):
+    def set_sync_callback(self, callback: Callable[[Optional[dict]], None]):
         """
-        Update RC channel values.
+        Set callback for CRSF sync-lock state changes.
+        Called with {'rate_hz': float, 'offset_us': float} on sync, None on lost-sync.
+        Safe to update widgets directly — called inline from the GUI tick.
+        """
+        self.sync_callback = callback
 
-        Args:
-            channels: List of 16 channel values
-        """
+    def update_channels(self, channels: List[int], channels_are_1000_2000: bool = True):
+        """Update RC channel values."""
         if len(channels) != 16:
             raise ValueError(f"Expected 16 channels, got {len(channels)}")
-
-        # Convert from 1000-2000 to CRSF 0-1984
-        self.channels = [convert_channel_1000_2000_to_crsf(ch) for ch in channels]
+        if channels_are_1000_2000:
+            self.channels = [convert_channel_1000_2000_to_crsf(ch) for ch in channels]
+        else:
+            self.channels = list(channels)
 
     def set_failsafe(self, failsafe: bool):
         """
         Set failsafe mode.
 
-        When in failsafe, RC frames are not sent.
-
-        Args:
-            failsafe: True to enable failsafe, False to disable
+        When True, no frames are written. The TX detects the silence and
+        transitions to noCrossfire after ~1 s; the RX applies its failsafe.
+        The send schedule keeps advancing so re-enabling doesn't burst.
         """
         self.failsafe = failsafe
 
     def queue_frame(self, frame: bytes) -> bool:
-        """
-        Queue a frame to be sent in the next available slot.
-
-        Queued frames are sent instead of RC frames when the queue is not empty.
-
-        Args:
-            frame: Complete CRSF frame (with address, length, type, payload, CRC)
-
-        Returns:
-            True if frame was queued successfully, False if queue is full
-        """
+        """Queue a frame for transmission. Returns False if queue is full."""
         if len(self.output_queue) >= self.output_queue.maxlen:
             return False
-
         self.output_queue.append(frame)
         return True
 
     def queue_ping(self) -> bool:
-        """
-        Queue a device ping frame.
-
-        Returns:
-            True if ping was queued successfully
-        """
+        """Queue a device ping frame."""
         return self.queue_frame(build_ping_frame())
 
     def queue_param_request(self, device_addr: int, param_index: int, chunk: int = 0) -> bool:
-        """
-        Queue a parameter request frame.
-
-        Args:
-            device_addr: Target device address
-            param_index: Parameter index to read
-            chunk: Chunk number for multi-chunk parameters
-
-        Returns:
-            True if request was queued successfully
-        """
+        """Queue a parameter request frame."""
         return self.queue_frame(build_param_request(device_addr, param_index, chunk))
 
-    def is_time_to_send_frame(self) -> bool:
+    def _next_frame_to_send(self) -> Optional[bytes]:
         """
-        Check if it's time to send the next frame.
+        Pick the next frame to transmit.
 
-        Returns:
-            True if enough time has elapsed since the last frame
+        Returns None when in failsafe (caller should still advance the schedule).
+        Interleaves queued frames with RC frames when the queue is non-empty.
         """
-        current_time = time.time()
-        return (current_time - self.last_frame_time) >= self.rc_interval_ms / 1000.0
+        if self.failsafe:
+            return None
+
+        if self.output_queue:
+            if self.last_was_rc:
+                # Alternate: queued frame after RC
+                frame = self.output_queue.popleft()
+                self.last_was_rc = False
+                return frame
+            else:
+                # RC turn
+                self.rc_frames_sent += 1
+                self.last_was_rc = True
+                return build_rc_frame(self.channels)
+
+        # No queued frames: send RC back-to-back
+        self.rc_frames_sent += 1
+        self.last_was_rc = True
+        return build_rc_frame(self.channels)
 
     def run(self):
         """
         Execute one iteration of the state machine.
 
-        This should be called frequently from the main loop.
-
-        Logic:
-        - Process incoming bytes and decode CRSF frames
-        - If in failsafe: only send non-RC frames back-to-back
-        - If not in failsafe and have queued frames: alternate between non-RC and RC
-        - If no non-RC frames: send RC frames back-to-back (unless in failsafe)
+        Called once per GUI tick. Drains incoming RX bytes, then sends all
+        frames that are due (cumulative catch-up, bounded by _MAX_CATCHUP).
         """
-        # Process incoming serial data
         self._process_incoming_frames()
-        
-        # Check if it's time to send something
-        if not self.is_time_to_send_frame():
+
+        if self.serial_port is None:
             return
 
-        # Case 1: In failsafe - only send queued frames
-        if self.failsafe:
-            if self.output_queue:
-                frame = self.output_queue.popleft()
-                self.last_frame_time = time.time()
-                self.last_was_rc = False
-                if self.serial_port:
-                    self.serial_port.write(frame)
-                return
-            # In failsafe with no queued frames: don't send anything
-            return
+        now = time.monotonic()
 
-        # Case 2: Not in failsafe with queued frames - alternate between queued and RC
-        if self.output_queue:
-            if self.last_was_rc:
-                # Last was RC, now send queued frame
-                frame = self.output_queue.popleft()
-                self.last_frame_time = time.time()
-                self.last_was_rc = False
-                if self.serial_port:
-                    self.serial_port.write(frame)
-                return
-            else:
-                # Last was not RC (or first frame), send RC frame
-                frame = build_rc_frame(self.channels)
-                self.last_frame_time = time.time()
-                self.rc_frames_sent += 1
-                self.last_was_rc = True
-                if self.serial_port:
-                    self.serial_port.write(frame)
-                return
+        # Lost-sync detection: notify UI but keep using last known interval
+        if self._sync_locked and (now - self._last_sync_recv) > _LOST_SYNC_AFTER_S:
+            self._sync_locked = False
+            if self.sync_callback:
+                self.sync_callback(None)
 
-        # Case 3: No queued frames - send RC frames back-to-back
-        frame = build_rc_frame(self.channels)
-        self.last_frame_time = time.time()
-        self.rc_frames_sent += 1
-        self.last_was_rc = True
-        if self.serial_port:
+        # Resync schedule if too far behind (e.g. after system sleep or modal dialog)
+        if self._next_send < now - _MAX_CATCHUP * self._interval_s:
+            self._next_send = now
+
+        sent = 0
+        while now >= self._next_send and sent < _MAX_CATCHUP:
+            frame = self._next_frame_to_send()
+            if frame is None:
+                # In failsafe: advance schedule so we don't burst on resume
+                self._next_send += self._interval_s
+                return
             self.serial_port.write(frame)
+            self._last_frame_time = now
+            self._next_send += self._interval_s
+            sent += 1
 
     def get_stats(self) -> dict:
-        """
-        Get statistics about the state machine.
-
-        Returns:
-            Dictionary with statistics:
-                - rc_frames_sent: Total RC frames sent
-                - last_frame_time: Timestamp of last frame
-                - failsafe: Current failsafe state
-                - queued_frames: Number of frames in output queue
-        """
+        """Return state machine statistics."""
         return {
             'rc_frames_sent': self.rc_frames_sent,
-            'last_frame_time': self.last_frame_time,
+            'last_frame_time': self._last_frame_time,
             'failsafe': self.failsafe,
             'queued_frames': len(self.output_queue),
         }
 
     def reset(self):
-        """
-        Reset the state machine to initial state.
-
-        Clears all queued frames and resets counters.
-        """
-        self.last_frame_time = 0.0
+        """Reset to initial state. Clears queue and counters."""
+        self._next_send = 0.0
+        self._last_frame_time = 0.0
         self.rc_frames_sent = 0
         self.last_was_rc = False
         self.output_queue.clear()
-        self.channels = [992] * 16  # Reset to center
+        self.channels = [992] * 16
 
     def _process_incoming_frames(self):
-        """
-        Process incoming bytes from serial and decode CRSF frames.
-        
-        Reads available bytes and pushes them through the frame decoder.
-        Handles decoded frames based on their type.
-        """
+        """Drain all available RX bytes and decode any complete CRSF frames."""
         if not self.serial_port:
             return
-        
-        # Process all available bytes
-        while self.serial_port.available() > 0:
-            byte = self.serial_port.read()
-            if byte < 0:  # No data or error
-                break
-            
-            frame = self.frame_decoder.push_byte(byte)
+        n = self.serial_port.available()
+        if n <= 0:
+            return
+        data = self.serial_port.read_bulk(n)
+        for b in data:
+            frame = self.frame_decoder.push_byte(b)
             if frame is not None:
-                # CRSF frame decoded - process it
                 self._handle_received_frame(frame)
-    
+
     def _handle_received_frame(self, frame: dict):
-        """
-        Handle a received and decoded CRSF frame.
-        
-        Args:
-            frame: Decoded frame dictionary with 'type', 'payload', 'valid', etc.
-        """
-        # Only process frames with valid CRC
+        """Dispatch a decoded CRSF frame to the appropriate handler."""
         if not frame.get('valid', False):
             return
-        
+
         frame_type = frame.get('type')
-        
-        # Handle link statistics frame (0x14)
+
         if frame_type == CRSF_FRAMETYPE_LINK_STATISTICS:
-            # Parse link statistics
             stats = parse_link_statistics(frame.get('payload', b''))
             if stats and self.link_stats_callback:
                 self.link_stats_callback(stats)
+
+        elif frame_type == CRSF_FRAMETYPE_RADIO_ID:
+            # Extended frame: payload starts with dest+orig, strip them for the parser
+            payload = frame.get('payload', b'')
+            sync = parse_handset_timing(payload[2:])
+            if sync is None:
+                return
+            rate_us, offset_us = sync
+            self._interval_s = rate_us / 1_000_000
+            self._next_send += offset_us / 1_000_000  # one-shot phase correction
+            self._last_sync_recv = time.monotonic()
+            self._sync_locked = True
+            if self.sync_callback:
+                self.sync_callback({'rate_hz': 1e6 / rate_us, 'offset_us': offset_us})
