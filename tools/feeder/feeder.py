@@ -23,6 +23,11 @@ from channel_ui import ChannelRow, SRC_CHOICES
 from config_manager import ConfigManager, DEFAULT_BAUD, CHANNELS, DEFAULT_CFG
 from version import VERSION, GIT_SHA
 from crsf_state_machine import CRSFStateMachine
+from lua_state_machine import LuaStateMachine
+from device_parameters import (
+    PARAM_TYPE_UINT8, PARAM_TYPE_INT8, PARAM_TYPE_TEXT_SELECTION,
+    PARAM_TYPE_STRING, PARAM_TYPE_FOLDER, PARAM_TYPE_INFO, PARAM_TYPE_COMMAND,
+)
 
 GUI_UPDATE_INTERVAL_S = 1.0 / 60  # ~60 Hz redraws
 CSV_LOG_INTERVAL_S    = 0.1       # 10 Hz CSV logging
@@ -188,6 +193,17 @@ class Main(QtWidgets.QWidget):
         self.crsf_state_machine.set_serial(self.serThread)
         self.crsf_state_machine.set_link_stats_callback(self.onLinkStats)
         self.crsf_state_machine.set_sync_callback(self.onSyncStatus)
+
+        # LUA state machine - ELRS parameter discovery and editing
+        self.lua = LuaStateMachine(send=self.crsf_state_machine.queue_frame)
+        self.lua.on_devices_changed  = self._lua_on_devices
+        self.lua.on_loading_progress = self._lua_on_progress
+        self.lua.on_loading_complete = self._lua_on_complete
+        self.lua.on_loading_aborted  = self._lua_on_aborted
+        self.lua.on_field_updated    = self._lua_on_field
+        self.lua.on_debug            = self.onDebug
+        self.crsf_state_machine.set_lua_callback(self.lua.handle_frame)
+        self.crsf_state_machine.set_lua_tick_callback(self.lua.tick)
 
         # Main content: channels on left, visualizers on right
         content_layout = QtWidgets.QHBoxLayout()
@@ -420,6 +436,10 @@ class Main(QtWidgets.QWidget):
         channels_tab_layout.addLayout(content_layout)
         self.tabs.addTab(channels_tab, "Controller")
 
+        # Configuration tab
+        config_tab = self._create_config_tab()
+        self.tabs.addTab(config_tab, "Configuration")
+
         self.tabs.setCurrentIndex(0)
         top_bar = QtWidgets.QHBoxLayout()
         top_bar.setContentsMargins(0, 4, 0, 4)
@@ -508,6 +528,8 @@ class Main(QtWidgets.QWidget):
             try:
                 self.jrBayStatusLabel.setText("Disconnected")
                 self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
+                self.lua.reset()
+                self._lua_on_devices([])
             except Exception:
                 pass
 
@@ -1018,6 +1040,316 @@ class Main(QtWidgets.QWidget):
                 self.onDebug(f"CSV logging stopped: {self.csv_filename}")
                 self.csv_filename = None
                 self.csv_start_time = None
+
+    # ------------------------------------------------------------------
+    # Configuration tab
+    # ------------------------------------------------------------------
+
+    def _create_config_tab(self) -> QtWidgets.QWidget:
+        """Build the Configuration tab widget (three stacked panes)."""
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+
+        # Toolbar: Scan + Reload buttons
+        toolbar = QtWidgets.QHBoxLayout()
+        self._cfg_scan_btn   = QtWidgets.QPushButton("Scan")
+        self._cfg_reload_btn = QtWidgets.QPushButton("Reload")
+        self._cfg_reload_btn.setEnabled(False)
+        self._cfg_scan_btn.clicked.connect(self._lua_scan)
+        self._cfg_reload_btn.clicked.connect(self._lua_reload)
+        toolbar.addWidget(self._cfg_scan_btn)
+        toolbar.addWidget(self._cfg_reload_btn)
+        toolbar.addStretch()
+        layout.addLayout(toolbar)
+
+        divider = QtWidgets.QFrame()
+        divider.setFrameShape(QtWidgets.QFrame.HLine)
+        divider.setFrameShadow(QtWidgets.QFrame.Sunken)
+        layout.addWidget(divider)
+
+        # Stacked widget: pane 0 = device list, pane 1 = loading, pane 2 = params
+        self._cfg_stack = QtWidgets.QStackedWidget()
+
+        # ---- Pane 0: device list ----------------------------------------
+        self._cfg_device_pane = QtWidgets.QWidget()
+        device_pane_layout = QtWidgets.QVBoxLayout(self._cfg_device_pane)
+        self._cfg_device_label = QtWidgets.QLabel("Press Scan to discover devices.")
+        self._cfg_device_label.setAlignment(QtCore.Qt.AlignTop)
+        device_pane_layout.addWidget(self._cfg_device_label)
+        self._cfg_device_list_layout = QtWidgets.QVBoxLayout()
+        device_pane_layout.addLayout(self._cfg_device_list_layout)
+        device_pane_layout.addStretch()
+        self._cfg_stack.addWidget(self._cfg_device_pane)
+
+        # ---- Pane 1: loading --------------------------------------------
+        self._cfg_loading_pane = QtWidgets.QWidget()
+        loading_layout = QtWidgets.QVBoxLayout(self._cfg_loading_pane)
+        loading_layout.setAlignment(QtCore.Qt.AlignTop)
+        self._cfg_loading_label = QtWidgets.QLabel("Loading parameters...")
+        self._cfg_progress = QtWidgets.QProgressBar()
+        self._cfg_progress.setRange(0, 100)
+        self._cfg_progress.setValue(0)
+        loading_layout.addWidget(self._cfg_loading_label)
+        loading_layout.addWidget(self._cfg_progress)
+        loading_layout.addStretch()
+        self._cfg_stack.addWidget(self._cfg_loading_pane)
+
+        # ---- Pane 2: parameter view ------------------------------------
+        self._cfg_params_pane = QtWidgets.QWidget()
+        params_outer = QtWidgets.QVBoxLayout(self._cfg_params_pane)
+        params_outer.setContentsMargins(0, 0, 0, 0)
+        params_outer.setSpacing(4)
+
+        # Breadcrumb row
+        breadcrumb_row = QtWidgets.QHBoxLayout()
+        self._cfg_back_btn = QtWidgets.QPushButton("← Back")
+        self._cfg_back_btn.setMaximumWidth(80)
+        self._cfg_back_btn.clicked.connect(self._lua_back)
+        self._cfg_back_btn.setVisible(False)
+        self._cfg_breadcrumb = QtWidgets.QLabel("Home")
+        breadcrumb_row.addWidget(self._cfg_back_btn)
+        breadcrumb_row.addWidget(self._cfg_breadcrumb)
+        breadcrumb_row.addStretch()
+        params_outer.addLayout(breadcrumb_row)
+
+        # Scroll area for the param widgets
+        self._cfg_params_scroll = QtWidgets.QScrollArea()
+        self._cfg_params_scroll.setWidgetResizable(True)
+        self._cfg_params_content = QtWidgets.QWidget()
+        self._cfg_params_content_layout = QtWidgets.QVBoxLayout(self._cfg_params_content)
+        self._cfg_params_content_layout.setSpacing(4)
+        self._cfg_params_content_layout.addStretch()
+        self._cfg_params_scroll.setWidget(self._cfg_params_content)
+        params_outer.addWidget(self._cfg_params_scroll)
+
+        self._cfg_stack.addWidget(self._cfg_params_pane)
+
+        layout.addWidget(self._cfg_stack)
+        return tab
+
+    # -- LUA callbacks (called inline on the GUI thread) -----------------
+
+    def _lua_on_devices(self, devices: list) -> None:
+        """Rebuild the device list pane."""
+        try:
+            # Clear existing device buttons
+            while self._cfg_device_list_layout.count():
+                item = self._cfg_device_list_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+
+            if devices:
+                self._cfg_device_label.setText("Select a device:")
+                for device in devices:
+                    name   = device.get('name', '???')
+                    addr   = device.get('address', 0)
+                    n_params = device.get('parametersTotal', '?')
+                    elrs   = " [ELRS]" if device.get('isElrs') else ""
+                    label  = f"{name}  (0x{addr:02X}){elrs}  —  {n_params} params"
+                    btn = QtWidgets.QPushButton(label)
+                    dev = device  # capture for lambda
+                    btn.clicked.connect(lambda _, d=dev: self._lua_select_device(d))
+                    self._cfg_device_list_layout.addWidget(btn)
+            else:
+                self._cfg_device_label.setText("Press Scan to discover devices.")
+
+            self._cfg_stack.setCurrentIndex(0)
+            self._cfg_reload_btn.setEnabled(False)
+        except Exception as e:
+            self.onDebug(f"Config device list error: {e}")
+
+    def _lua_on_progress(self, loaded: int, total: int) -> None:
+        try:
+            self._cfg_loading_label.setText(f"Loading parameters... ({loaded}/{total})")
+            pct = int(loaded * 100 / total) if total else 0
+            self._cfg_progress.setValue(pct)
+            self._cfg_stack.setCurrentIndex(1)
+        except Exception:
+            pass
+
+    def _lua_on_complete(self, parameters: dict) -> None:
+        try:
+            self._render_params()
+            self._cfg_stack.setCurrentIndex(2)
+            self._cfg_reload_btn.setEnabled(True)
+        except Exception as e:
+            self.onDebug(f"Config render error: {e}")
+
+    def _lua_on_aborted(self, message: str) -> None:
+        try:
+            self._cfg_device_label.setText(f"Error: {message}")
+            self._cfg_stack.setCurrentIndex(0)
+            self._cfg_reload_btn.setEnabled(False)
+        except Exception:
+            pass
+
+    def _lua_on_field(self, param: dict) -> None:
+        pass  # re-render happens in on_loading_complete after reload chain
+
+    # -- Configuration tab actions ---------------------------------------
+
+    def _lua_scan(self) -> None:
+        self.lua.scan_devices()
+        self._cfg_stack.setCurrentIndex(0)
+        self._cfg_reload_btn.setEnabled(False)
+
+    def _lua_reload(self) -> None:
+        if self.lua.selected_device:
+            self._cfg_loading_label.setText("Loading parameters... (0/0)")
+            self._cfg_progress.setValue(0)
+            self._cfg_stack.setCurrentIndex(1)
+            self.lua.load_parameters()
+
+    def _lua_select_device(self, device: dict) -> None:
+        self._cfg_loading_label.setText(
+            f"Loading parameters... (0/{device.get('parametersTotal', '?')})"
+        )
+        self._cfg_progress.setValue(0)
+        self._cfg_stack.setCurrentIndex(1)
+        self.lua.select_device(device)
+
+    def _lua_back(self) -> None:
+        self.lua.navigate_back()
+        self._render_params()
+
+    # -- Parameter rendering ---------------------------------------------
+
+    def _render_params(self) -> None:
+        """Rebuild the parameter widget list for the current folder."""
+        try:
+            # Remove all widgets except the trailing stretch
+            layout = self._cfg_params_content_layout
+            while layout.count() > 1:
+                item = layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+
+            # Breadcrumb
+            if self.lua.folder_stack:
+                crumbs = ["Home"] + [e['name'] for e in self.lua.folder_stack]
+                self._cfg_breadcrumb.setText(" > ".join(crumbs))
+                self._cfg_back_btn.setVisible(True)
+            else:
+                self._cfg_breadcrumb.setText("Home")
+                self._cfg_back_btn.setVisible(False)
+
+            # Visible params for current folder, sorted by number
+            visible = sorted(
+                [p for p in self.lua.parameters.values()
+                 if p['parentFolder'] == self.lua.current_folder
+                 and not p['hidden']],
+                key=lambda p: p['number'],
+            )
+
+            for param in visible:
+                row_widget = self._make_param_row(param)
+                if row_widget:
+                    layout.insertWidget(layout.count() - 1, row_widget)
+        except Exception as e:
+            self.onDebug(f"Render params error: {e}")
+
+    def _make_param_row(self, param: dict) -> QtWidgets.QWidget:
+        """Build a single parameter row widget."""
+        try:
+            container = QtWidgets.QWidget()
+            row = QtWidgets.QHBoxLayout(container)
+            row.setContentsMargins(2, 1, 2, 1)
+
+            fid   = param['number']
+            ptype = param['type']
+            name  = param['name'] or f"Param {fid}"
+            label = QtWidgets.QLabel(name)
+            label.setMinimumWidth(160)
+            label.setMaximumWidth(200)
+            row.addWidget(label)
+
+            if ptype in (PARAM_TYPE_UINT8, PARAM_TYPE_INT8):
+                spin = NoWheelSpinBox()
+                if ptype == PARAM_TYPE_INT8:
+                    lo = param['min'] if param['min'] is not None else -128
+                    hi = param['max'] if param['max'] is not None else 127
+                else:
+                    lo = param['min'] if param['min'] is not None else 0
+                    hi = param['max'] if param['max'] is not None else 255
+                spin.setRange(lo, hi)
+                spin.blockSignals(True)
+                spin.setValue(param['value'] if param['value'] is not None else lo)
+                spin.blockSignals(False)
+                if param['unit']:
+                    spin.setSuffix(f" {param['unit']}")
+                spin.valueChanged.connect(
+                    lambda v, f=fid: self._on_param_changed(f, v)
+                )
+                row.addWidget(spin)
+
+            elif ptype == PARAM_TYPE_TEXT_SELECTION:
+                combo = NoWheelComboBox()
+                # AdjustToContents makes sizeHint() = widest item, so the popup
+                # inherits that width and doesn't clip option text.
+                combo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
+                combo.setMinimumWidth(180)
+                for i, opt in enumerate(param.get('options') or []):
+                    if opt.strip():
+                        combo.addItem(opt, i)
+                combo.blockSignals(True)
+                current_val = param.get('value')
+                for j in range(combo.count()):
+                    if combo.itemData(j) == current_val:
+                        combo.setCurrentIndex(j)
+                        break
+                combo.blockSignals(False)
+                combo.currentIndexChanged.connect(
+                    lambda idx, f=fid, c=combo: self._on_param_changed(
+                        f, c.itemData(idx) if idx >= 0 else 0
+                    )
+                )
+                # Stretch factor 1: combo expands to fill the row instead of the
+                # trailing spacer stealing all remaining width.
+                row.addWidget(combo, 1)
+
+            elif ptype == PARAM_TYPE_FOLDER:
+                btn = QtWidgets.QPushButton("Enter")
+                btn.clicked.connect(
+                    lambda _, f=fid, n=name: self._lua_enter_folder(f, n)
+                )
+                row.addWidget(btn)
+
+            elif ptype == PARAM_TYPE_INFO:
+                val_label = QtWidgets.QLabel(str(param.get('value') or ''))
+                val_label.setStyleSheet("color: #aaaaaa;")
+                row.addWidget(val_label)
+
+            elif ptype == PARAM_TYPE_COMMAND:
+                btn_text = param.get('value') or "Execute"
+                btn = QtWidgets.QPushButton(btn_text)
+                btn.clicked.connect(
+                    lambda _, f=fid: self._on_param_changed(f, 1)  # status=START
+                )
+                row.addWidget(btn)
+
+            elif ptype == PARAM_TYPE_STRING:
+                val_label = QtWidgets.QLabel(str(param.get('value') or ''))
+                val_label.setStyleSheet("color: #aaaaaa;")
+                row.addWidget(val_label)
+
+            else:
+                row.addWidget(QtWidgets.QLabel(f"Unsupported type 0x{ptype:02X}"))
+
+            row.addStretch()
+            return container
+        except Exception as e:
+            self.onDebug(f"Param row error (fid={param.get('number')}): {e}")
+            return None
+
+    def _lua_enter_folder(self, folder_id: int, name: str) -> None:
+        self.lua.navigate_to_folder(folder_id, name)
+        self._render_params()
+
+    def _on_param_changed(self, fid: int, value: int) -> None:
+        if not self.lua.update_parameter(int(fid), int(value)):
+            self.onDebug(f"param write rejected (fid={fid})")
 
     def closeEvent(self, e):
         try:

@@ -19,6 +19,9 @@ from crsf_protocol import (
     convert_channel_1000_2000_to_crsf, CRSFFrameDecoder,
     CRSF_FRAMETYPE_LINK_STATISTICS, parse_link_statistics,
     CRSF_FRAMETYPE_RADIO_ID, parse_handset_timing,
+    CRSF_FRAMETYPE_DEVICE_INFO,
+    CRSF_FRAMETYPE_PARAMETER_SETTINGS_ENTRY,
+    CRSF_FRAMETYPE_ELRS_STATUS,
 )
 
 _MAX_CATCHUP = 5
@@ -74,6 +77,8 @@ class CRSFStateMachine:
         # Callbacks (set externally, called on GUI thread)
         self.link_stats_callback: Optional[Callable[[dict], None]] = None
         self.sync_callback: Optional[Callable[[Optional[dict]], None]] = None
+        self.lua_callback: Optional[Callable[[dict], None]] = None
+        self.lua_tick_callback: Optional[Callable[[float], None]] = None
 
     def set_serial(self, serial_port):
         """Set the serial port object (must have available(), read_bulk(), write())."""
@@ -90,6 +95,14 @@ class CRSFStateMachine:
         Safe to update widgets directly — called inline from the GUI tick.
         """
         self.sync_callback = callback
+
+    def set_lua_callback(self, callback: Callable[[dict], None]):
+        """Forward DEVICE_INFO / PARAM_ENTRY / ELRS_STATUS frames to the LUA state machine."""
+        self.lua_callback = callback
+
+    def set_lua_tick_callback(self, callback: Callable[[float], None]):
+        """Call LuaStateMachine.tick(now) once per run() invocation."""
+        self.lua_tick_callback = callback
 
     def update_channels(self, channels: List[int], channels_are_1000_2000: bool = True):
         """Update RC channel values."""
@@ -160,6 +173,9 @@ class CRSFStateMachine:
         frames that are due (cumulative catch-up, bounded by _MAX_CATCHUP).
         """
         self._process_incoming_frames()
+
+        if self.lua_tick_callback:
+            self.lua_tick_callback(time.monotonic())
 
         if self.serial_port is None:
             return
@@ -244,3 +260,9 @@ class CRSFStateMachine:
             self._sync_locked = True
             if self.sync_callback:
                 self.sync_callback({'rate_hz': 1e6 / rate_us, 'offset_us': offset_us})
+
+        elif frame_type in (CRSF_FRAMETYPE_DEVICE_INFO,
+                            CRSF_FRAMETYPE_PARAMETER_SETTINGS_ENTRY,
+                            CRSF_FRAMETYPE_ELRS_STATUS):
+            if self.lua_callback:
+                self.lua_callback(frame)

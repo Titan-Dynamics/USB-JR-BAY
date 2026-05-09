@@ -10,7 +10,12 @@ Tests cover:
 """
 
 import struct
+import sys
+import os
 import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+
 from crsf_protocol import (
     parse_link_statistics, parse_rc_channels, parse_handset_timing,
     CRSFFrameDecoder, crsf_crc8,
@@ -19,6 +24,12 @@ from crsf_protocol import (
     CRSF_SUBCMD_TIMING,
     convert_channel_1000_2000_to_crsf,
     CRSF_CHANNEL_MIN, CRSF_CHANNEL_MAX,
+    build_ping_frame, build_param_read, build_param_write,
+    parse_param_entry_header,
+    CRSF_ADDRESS_BROADCAST, CRSF_ADDRESS_RADIO, CRSF_ADDRESS_MODULE,
+    CRSF_ADDRESS_ELRS_LUA,
+    CRSF_FRAMETYPE_PING_DEVICES,
+    CRSF_FRAMETYPE_PARAMETER_READ, CRSF_FRAMETYPE_PARAMETER_WRITE,
 )
 
 
@@ -370,6 +381,77 @@ class TestParseHandsetTiming(unittest.TestCase):
         rate_us, offset_us = result
         self.assertAlmostEqual(rate_us, 1000.0, places=6)
         self.assertAlmostEqual(offset_us, 0.0, places=6)
+
+
+class TestBuildPingFrame(unittest.TestCase):
+    def test_defaults_broadcast_origin_radio(self):
+        f = build_ping_frame()
+        self.assertEqual(f[2], CRSF_FRAMETYPE_PING_DEVICES)
+        self.assertEqual(f[3], CRSF_ADDRESS_BROADCAST)
+        self.assertEqual(f[4], CRSF_ADDRESS_RADIO)
+        self.assertEqual(f[5], crsf_crc8(f[2:5]))
+
+    def test_build_ping_frame_origin_param(self):
+        """origin_addr parameter must be written to byte 4."""
+        f = build_ping_frame(target_addr=CRSF_ADDRESS_MODULE,
+                             origin_addr=CRSF_ADDRESS_ELRS_LUA)
+        self.assertEqual(f[3], CRSF_ADDRESS_MODULE)
+        self.assertEqual(f[4], CRSF_ADDRESS_ELRS_LUA)
+        self.assertEqual(f[5], crsf_crc8(f[2:5]))
+
+
+class TestBuildParamRead(unittest.TestCase):
+    def test_build_param_read_origin_param(self):
+        """origin_addr must appear at byte 4, param_index at 5, chunk at 6."""
+        f = build_param_read(CRSF_ADDRESS_MODULE, CRSF_ADDRESS_ELRS_LUA, 7, 2)
+        self.assertEqual(f[2], CRSF_FRAMETYPE_PARAMETER_READ)
+        self.assertEqual(f[3], CRSF_ADDRESS_MODULE)
+        self.assertEqual(f[4], CRSF_ADDRESS_ELRS_LUA)
+        self.assertEqual(f[5], 7)  # param_index
+        self.assertEqual(f[6], 2)  # chunk_number
+        self.assertEqual(f[7], crsf_crc8(f[2:7]))
+
+    def test_default_chunk_is_zero(self):
+        f = build_param_read(CRSF_ADDRESS_MODULE, CRSF_ADDRESS_RADIO, 3)
+        self.assertEqual(f[6], 0)
+
+
+class TestBuildParamWrite(unittest.TestCase):
+    def test_build_param_write_basic(self):
+        f = build_param_write(CRSF_ADDRESS_MODULE, CRSF_ADDRESS_ELRS_LUA, 5, 2)
+        self.assertEqual(f[2], CRSF_FRAMETYPE_PARAMETER_WRITE)
+        self.assertEqual(f[3], CRSF_ADDRESS_MODULE)
+        self.assertEqual(f[4], CRSF_ADDRESS_ELRS_LUA)
+        self.assertEqual(f[5], 5)
+        self.assertEqual(f[6], 2)
+        self.assertEqual(f[7], crsf_crc8(f[2:7]))
+
+    def test_negative_int8_masked_to_0xFF(self):
+        """Signed value -1 must be written as 0xFF on the wire."""
+        f = build_param_write(CRSF_ADDRESS_MODULE, CRSF_ADDRESS_RADIO, 1, -1)
+        self.assertEqual(f[6], 0xFF)
+
+
+class TestParseParamEntryHeader(unittest.TestCase):
+    def test_happy_path(self):
+        payload = bytes([0xEF, 0xEE, 3, 1, 0xAA, 0xBB])
+        hdr = parse_param_entry_header(payload)
+        self.assertIsNotNone(hdr)
+        self.assertEqual(hdr['dst'],              0xEF)
+        self.assertEqual(hdr['src'],              0xEE)
+        self.assertEqual(hdr['field_id'],         3)
+        self.assertEqual(hdr['chunks_remaining'], 1)
+        self.assertEqual(hdr['chunk_data'],       bytes([0xAA, 0xBB]))
+
+    def test_short_payload_returns_none(self):
+        self.assertIsNone(parse_param_entry_header(b''))
+        self.assertIsNone(parse_param_entry_header(b'\xEF\xEE\x03'))
+
+    def test_empty_chunk_data(self):
+        payload = bytes([0xEA, 0xEE, 5, 0])
+        hdr = parse_param_entry_header(payload)
+        self.assertIsNotNone(hdr)
+        self.assertEqual(hdr['chunk_data'], b'')
 
 
 if __name__ == '__main__':

@@ -35,6 +35,7 @@ CRSF_FRAMETYPE_REQUEST_SETTINGS = 0x2A
 CRSF_FRAMETYPE_PARAMETER_SETTINGS_ENTRY = 0x2B
 CRSF_FRAMETYPE_PARAMETER_READ = 0x2C
 CRSF_FRAMETYPE_PARAMETER_WRITE = 0x2D
+CRSF_FRAMETYPE_ELRS_STATUS = 0x2E
 CRSF_FRAMETYPE_COMMAND = 0x32
 CRSF_FRAMETYPE_RADIO_ID = 0x3A
 
@@ -296,47 +297,117 @@ def build_rc_frame(channels: List[int]) -> bytes:
     return bytes(frame)
 
 
-def build_ping_frame() -> bytes:
+def build_ping_frame(target_addr: int = CRSF_ADDRESS_BROADCAST,
+                     origin_addr: int = CRSF_ADDRESS_RADIO) -> bytes:
     """
     Build a device ping frame for discovery.
+
+    Args:
+        target_addr: Destination — 0x00 (broadcast) for scan, or a specific
+            device address (e.g. 0xEE) to direct the ping.
+        origin_addr: Our address — 0xEA for scan / non-ELRS targets,
+            0xEF (ADDR_ELRS_LUA) once we have identified an ELRS TX.
 
     Returns:
         Complete 6-byte ping frame with CRC
     """
     frame = bytearray(6)
-    frame[0] = CRSF_SYNC_BYTE  # 0xC8: Sync byte for radio->module commands
+    frame[0] = CRSF_SYNC_BYTE
     frame[1] = 4  # Length: Type + Payload (2 bytes) + CRC
     frame[2] = CRSF_FRAMETYPE_PING_DEVICES
-    frame[3] = 0x00  # Destination: Broadcast
-    frame[4] = CRSF_ADDRESS_RADIO  # Origin: Handset (0xEA)
-    frame[5] = crsf_crc8(frame[2:5])  # CRC over Type + 2-byte Payload
+    frame[3] = target_addr
+    frame[4] = origin_addr
+    frame[5] = crsf_crc8(frame[2:5])
+
+    return bytes(frame)
+
+
+def build_param_read(device_addr: int, origin_addr: int,
+                     param_index: int, chunk_number: int = 0) -> bytes:
+    """
+    Build a CRSF_FRAMETYPE_PARAMETER_READ (0x2C) frame.
+
+    Frame layout (extended):
+        [SYNC, length, 0x2C, device_addr, origin_addr,
+         param_index, chunk_number, CRC]
+
+    origin_addr must be 0xEF (ADDR_ELRS_LUA) when the destination is an ELRS
+    TX module, else 0xEA. The LUA state machine tracks this per-device based
+    on serialNumber == 'ELRS'.
+    """
+    frame = bytearray(8)
+    frame[0] = CRSF_SYNC_BYTE
+    frame[1] = 6  # Length: Type + Dest + Origin + Payload (2) + CRC
+    frame[2] = CRSF_FRAMETYPE_PARAMETER_READ
+    frame[3] = device_addr
+    frame[4] = origin_addr
+    frame[5] = param_index
+    frame[6] = chunk_number
+    frame[7] = crsf_crc8(frame[2:7])
 
     return bytes(frame)
 
 
 def build_param_request(device_addr: int, param_index: int, chunk_number: int = 0) -> bytes:
+    """Deprecated alias for build_param_read with origin hardcoded to CRSF_ADDRESS_RADIO."""
+    return build_param_read(device_addr, CRSF_ADDRESS_RADIO, param_index, chunk_number)
+
+
+def build_param_write(device_addr: int, origin_addr: int,
+                      param_index: int, value: int) -> bytes:
     """
-    Build a parameter request frame.
+    Build a CRSF_FRAMETYPE_PARAMETER_WRITE (0x2D) frame.
 
-    Args:
-        device_addr: Target device address
-        param_index: Parameter index to read
-        chunk_number: Chunk number for multi-chunk parameters (default: 0)
+    Frame layout:
+        [SYNC, length, 0x2D, device_addr, origin_addr,
+         param_index, value, CRC]
 
-    Returns:
-        Complete 8-byte parameter request frame with CRC
+    value is one byte:
+        UINT8 / TEXT_SELECTION: the new numeric value / option index.
+        INT8: caller passes signed; masked with 0xFF on wire.
+        COMMAND: status byte (1=START, 4=CONFIRMED, 5=CANCEL, 6=POLL).
+
+    Multi-byte writes (UINT16, INT16, FLOAT, STRING) are not implemented —
+    ELRS firmware does not emit those types for user-facing parameters.
     """
     frame = bytearray(8)
-    frame[0] = CRSF_SYNC_BYTE  # 0xC8: Sync byte
+    frame[0] = CRSF_SYNC_BYTE
     frame[1] = 6  # Length: Type + Dest + Origin + Payload (2) + CRC
-    frame[2] = CRSF_FRAMETYPE_PARAMETER_READ  # 0x2C: Parameter read
-    frame[3] = device_addr  # Destination: Device address
-    frame[4] = CRSF_ADDRESS_RADIO  # Origin: Radio/handset
-    frame[5] = param_index  # Param number
-    frame[6] = chunk_number  # Chunk number (0 = first chunk)
-    frame[7] = crsf_crc8(frame[2:7])  # CRC over Type + Dest + Origin + Payload
+    frame[2] = CRSF_FRAMETYPE_PARAMETER_WRITE
+    frame[3] = device_addr
+    frame[4] = origin_addr
+    frame[5] = param_index
+    frame[6] = value & 0xFF
+    frame[7] = crsf_crc8(frame[2:7])
 
     return bytes(frame)
+
+
+def parse_param_entry_header(payload: bytes) -> Optional[dict]:
+    """
+    Parse a CRSF_FRAMETYPE_PARAMETER_SETTINGS_ENTRY (0x2B) payload as it
+    comes out of CRSFFrameDecoder (extended frame, so dest+orig are still
+    at payload[0..1]).
+
+    Layout:
+        [0]    dst               (us; 0xEA or 0xEF)
+        [1]    src               (the device; 0xEE for TX)
+        [2]    field_id
+        [3]    chunks_remaining
+        [4:]   chunk_data        (one chunk of the field blob)
+
+    Returns dict with dst, src, field_id, chunks_remaining, chunk_data,
+    or None on too-short input.
+    """
+    if len(payload) < 4:
+        return None
+    return {
+        'dst':              payload[0],
+        'src':              payload[1],
+        'field_id':         payload[2],
+        'chunks_remaining': payload[3],
+        'chunk_data':       bytes(payload[4:]),
+    }
 
 
 # =============================================================================
