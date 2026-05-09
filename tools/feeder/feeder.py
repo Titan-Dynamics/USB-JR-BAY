@@ -436,9 +436,12 @@ class Main(QtWidgets.QWidget):
         channels_tab_layout.addLayout(content_layout)
         self.tabs.addTab(channels_tab, "Controller")
 
-        # Configuration tab
-        config_tab = self._create_config_tab()
-        self.tabs.addTab(config_tab, "Configuration")
+        # Parameters tab
+        params_tab = self._create_config_tab()
+        self.tabs.addTab(params_tab, "Parameters")
+
+        self._params_tab_first_visit = True
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
         self.tabs.setCurrentIndex(0)
         top_bar = QtWidgets.QHBoxLayout()
@@ -1046,75 +1049,125 @@ class Main(QtWidgets.QWidget):
     # ------------------------------------------------------------------
 
     def _create_config_tab(self) -> QtWidgets.QWidget:
-        """Build the Configuration tab widget (three stacked panes)."""
+        """Build the Parameters tab widget: device list on left, params on right."""
         tab = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(tab)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
+        outer = QtWidgets.QHBoxLayout(tab)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(8)
 
-        # Toolbar: Scan + Reload buttons
-        toolbar = QtWidgets.QHBoxLayout()
-        self._cfg_scan_btn   = QtWidgets.QPushButton("Scan")
-        self._cfg_reload_btn = QtWidgets.QPushButton("Reload")
-        self._cfg_reload_btn.setEnabled(False)
+        # ---- Left panel: Devices ----------------------------------------
+        left_panel = QtWidgets.QFrame()
+        left_panel.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        left_panel.setFrameShadow(QtWidgets.QFrame.Raised)
+        left_layout = QtWidgets.QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(6, 6, 6, 6)
+        left_layout.setSpacing(4)
+
+        left_header = QtWidgets.QHBoxLayout()
+        dev_title = QtWidgets.QLabel("Devices")
+        dev_title.setStyleSheet("font-weight: bold; font-size: 11pt; border: none;")
+        self._cfg_scan_btn = QtWidgets.QPushButton("Reload")
+        self._cfg_scan_btn.setMaximumWidth(72)
         self._cfg_scan_btn.clicked.connect(self._lua_scan)
+        left_header.addWidget(dev_title)
+        left_header.addStretch()
+        left_header.addWidget(self._cfg_scan_btn)
+        left_layout.addLayout(left_header)
+
+        left_div = QtWidgets.QFrame()
+        left_div.setFrameShape(QtWidgets.QFrame.HLine)
+        left_div.setFrameShadow(QtWidgets.QFrame.Sunken)
+        left_layout.addWidget(left_div)
+
+        device_scroll = QtWidgets.QScrollArea()
+        device_scroll.setWidgetResizable(True)
+        device_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self._cfg_device_container = QtWidgets.QWidget()
+        self._cfg_device_list_layout = QtWidgets.QVBoxLayout(self._cfg_device_container)
+        self._cfg_device_list_layout.setSpacing(4)
+        self._cfg_device_list_layout.setContentsMargins(0, 0, 0, 0)
+        self._cfg_device_label = QtWidgets.QLabel("Press Reload to discover devices.")
+        self._cfg_device_label.setStyleSheet("color: #888888; border: none;")
+        self._cfg_device_label.setAlignment(QtCore.Qt.AlignCenter)
+        self._cfg_device_list_layout.addWidget(self._cfg_device_label)
+        self._cfg_device_list_layout.addStretch()
+        device_scroll.setWidget(self._cfg_device_container)
+        left_layout.addWidget(device_scroll)
+
+        outer.addWidget(left_panel, 1)
+
+        # ---- Right panel: Parameters ------------------------------------
+        right_panel = QtWidgets.QFrame()
+        right_panel.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        right_panel.setFrameShadow(QtWidgets.QFrame.Raised)
+        right_layout = QtWidgets.QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(6, 6, 6, 6)
+        right_layout.setSpacing(4)
+
+        right_header = QtWidgets.QHBoxLayout()
+        self._cfg_device_name_label = QtWidgets.QLabel("Select a device")
+        self._cfg_device_name_label.setStyleSheet("font-weight: bold; font-size: 11pt; border: none;")
+        self._cfg_reload_btn = QtWidgets.QPushButton("Reload")
+        self._cfg_reload_btn.setMaximumWidth(72)
+        self._cfg_reload_btn.setEnabled(False)
         self._cfg_reload_btn.clicked.connect(self._lua_reload)
-        toolbar.addWidget(self._cfg_scan_btn)
-        toolbar.addWidget(self._cfg_reload_btn)
-        toolbar.addStretch()
-        layout.addLayout(toolbar)
+        right_header.addWidget(self._cfg_device_name_label)
+        right_header.addStretch()
+        right_header.addWidget(self._cfg_reload_btn)
+        right_layout.addLayout(right_header)
 
-        divider = QtWidgets.QFrame()
-        divider.setFrameShape(QtWidgets.QFrame.HLine)
-        divider.setFrameShadow(QtWidgets.QFrame.Sunken)
-        layout.addWidget(divider)
+        right_div = QtWidgets.QFrame()
+        right_div.setFrameShape(QtWidgets.QFrame.HLine)
+        right_div.setFrameShadow(QtWidgets.QFrame.Sunken)
+        right_layout.addWidget(right_div)
 
-        # Stacked widget: pane 0 = device list, pane 1 = loading, pane 2 = params
+        # Stacked: 0 = empty/no selection, 1 = loading, 2 = params
         self._cfg_stack = QtWidgets.QStackedWidget()
 
-        # ---- Pane 0: device list ----------------------------------------
-        self._cfg_device_pane = QtWidgets.QWidget()
-        device_pane_layout = QtWidgets.QVBoxLayout(self._cfg_device_pane)
-        self._cfg_device_label = QtWidgets.QLabel("Press Scan to discover devices.")
-        self._cfg_device_label.setAlignment(QtCore.Qt.AlignTop)
-        device_pane_layout.addWidget(self._cfg_device_label)
-        self._cfg_device_list_layout = QtWidgets.QVBoxLayout()
-        device_pane_layout.addLayout(self._cfg_device_list_layout)
-        device_pane_layout.addStretch()
-        self._cfg_stack.addWidget(self._cfg_device_pane)
+        # Pane 0: no device selected
+        empty_pane = QtWidgets.QWidget()
+        empty_layout = QtWidgets.QVBoxLayout(empty_pane)
+        no_device_lbl = QtWidgets.QLabel("No device selected")
+        no_device_lbl.setAlignment(QtCore.Qt.AlignCenter)
+        no_device_lbl.setStyleSheet("color: #888888; border: none;")
+        empty_layout.addStretch()
+        empty_layout.addWidget(no_device_lbl)
+        empty_layout.addStretch()
+        self._cfg_stack.addWidget(empty_pane)
 
-        # ---- Pane 1: loading --------------------------------------------
+        # Pane 1: loading
         self._cfg_loading_pane = QtWidgets.QWidget()
         loading_layout = QtWidgets.QVBoxLayout(self._cfg_loading_pane)
-        loading_layout.setAlignment(QtCore.Qt.AlignTop)
         self._cfg_loading_label = QtWidgets.QLabel("Loading parameters...")
+        self._cfg_loading_label.setAlignment(QtCore.Qt.AlignCenter)
+        self._cfg_loading_label.setStyleSheet("border: none;")
         self._cfg_progress = QtWidgets.QProgressBar()
         self._cfg_progress.setRange(0, 100)
         self._cfg_progress.setValue(0)
+        loading_layout.addStretch()
         loading_layout.addWidget(self._cfg_loading_label)
         loading_layout.addWidget(self._cfg_progress)
         loading_layout.addStretch()
         self._cfg_stack.addWidget(self._cfg_loading_pane)
 
-        # ---- Pane 2: parameter view ------------------------------------
+        # Pane 2: params
         self._cfg_params_pane = QtWidgets.QWidget()
         params_outer = QtWidgets.QVBoxLayout(self._cfg_params_pane)
         params_outer.setContentsMargins(0, 0, 0, 0)
         params_outer.setSpacing(4)
 
-        # Breadcrumb row
         breadcrumb_row = QtWidgets.QHBoxLayout()
         self._cfg_back_btn = QtWidgets.QPushButton("← Back")
         self._cfg_back_btn.setMaximumWidth(80)
         self._cfg_back_btn.clicked.connect(self._lua_back)
         self._cfg_back_btn.setVisible(False)
         self._cfg_breadcrumb = QtWidgets.QLabel("Home")
+        self._cfg_breadcrumb.setStyleSheet("border: none;")
         breadcrumb_row.addWidget(self._cfg_back_btn)
         breadcrumb_row.addWidget(self._cfg_breadcrumb)
         breadcrumb_row.addStretch()
         params_outer.addLayout(breadcrumb_row)
 
-        # Scroll area for the param widgets
         self._cfg_params_scroll = QtWidgets.QScrollArea()
         self._cfg_params_scroll.setWidgetResizable(True)
         self._cfg_params_content = QtWidgets.QWidget()
@@ -1126,39 +1179,84 @@ class Main(QtWidgets.QWidget):
 
         self._cfg_stack.addWidget(self._cfg_params_pane)
 
-        layout.addWidget(self._cfg_stack)
+        right_layout.addWidget(self._cfg_stack)
+        outer.addWidget(right_panel, 2)
+
         return tab
 
     # -- LUA callbacks (called inline on the GUI thread) -----------------
 
     def _lua_on_devices(self, devices: list) -> None:
-        """Rebuild the device list pane."""
+        """Rebuild the device list panel."""
         try:
-            # Clear existing device buttons
-            while self._cfg_device_list_layout.count():
-                item = self._cfg_device_list_layout.takeAt(0)
+            # Layout is: [label(0), ...cards..., stretch(last)]
+            # Clear only the card widgets between label and stretch (indices 1..count-2)
+            while self._cfg_device_list_layout.count() > 2:
+                item = self._cfg_device_list_layout.takeAt(1)
                 if item.widget():
                     item.widget().deleteLater()
 
             if devices:
-                self._cfg_device_label.setText("Select a device:")
+                self._cfg_device_label.setVisible(False)
                 for device in devices:
-                    name   = device.get('name', '???')
-                    addr   = device.get('address', 0)
-                    n_params = device.get('parametersTotal', '?')
-                    elrs   = " [ELRS]" if device.get('isElrs') else ""
-                    label  = f"{name}  (0x{addr:02X}){elrs}  —  {n_params} params"
-                    btn = QtWidgets.QPushButton(label)
-                    dev = device  # capture for lambda
-                    btn.clicked.connect(lambda _, d=dev: self._lua_select_device(d))
-                    self._cfg_device_list_layout.addWidget(btn)
+                    card = self._make_device_card(device)
+                    self._cfg_device_list_layout.insertWidget(
+                        self._cfg_device_list_layout.count() - 1, card
+                    )
             else:
-                self._cfg_device_label.setText("Press Scan to discover devices.")
+                self._cfg_device_label.setText("No devices found.")
+                self._cfg_device_label.setVisible(True)
 
+            self._cfg_scan_btn.setEnabled(True)
+            self._cfg_scan_btn.setText("Reload")
+            self._cfg_device_name_label.setText("Select a device")
             self._cfg_stack.setCurrentIndex(0)
             self._cfg_reload_btn.setEnabled(False)
         except Exception as e:
             self.onDebug(f"Config device list error: {e}")
+
+    def _make_device_card(self, device: dict) -> QtWidgets.QFrame:
+        """Build a clickable device card matching the web UI style."""
+        name     = device.get('name', '???')
+        addr     = device.get('address', 0)
+        n_params = device.get('parametersTotal', '?')
+
+        card = QtWidgets.QFrame()
+        card.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        card.setCursor(QtCore.Qt.PointingHandCursor)
+        card.setStyleSheet("""
+            QFrame {
+                border: 1px solid #555555;
+                border-radius: 4px;
+                background-color: #3c3c3c;
+            }
+            QFrame:hover {
+                background-color: #4a4a4a;
+                border-color: #888888;
+            }
+        """)
+
+        card_layout = QtWidgets.QVBoxLayout(card)
+        card_layout.setContentsMargins(8, 6, 8, 6)
+        card_layout.setSpacing(2)
+
+        name_lbl = QtWidgets.QLabel(name)
+        name_lbl.setStyleSheet("font-weight: bold; border: none; background: transparent;")
+
+        addr_lbl = QtWidgets.QLabel(f"0x{addr:02X}")
+        addr_lbl.setStyleSheet("color: #888888; font-family: monospace; font-size: 8pt; border: none; background: transparent;")
+
+        count_lbl = QtWidgets.QLabel(f"{n_params} params")
+        count_lbl.setStyleSheet("color: #888888; font-size: 8pt; border: none; background: transparent;")
+
+        card_layout.addWidget(name_lbl)
+        card_layout.addWidget(addr_lbl)
+        card_layout.addWidget(count_lbl)
+
+        dev = device
+        card.mousePressEvent = lambda e, d=dev: self._lua_select_device(d)
+
+        return card
 
     def _lua_on_progress(self, loaded: int, total: int) -> None:
         try:
@@ -1180,6 +1278,8 @@ class Main(QtWidgets.QWidget):
     def _lua_on_aborted(self, message: str) -> None:
         try:
             self._cfg_device_label.setText(f"Error: {message}")
+            self._cfg_device_label.setVisible(True)
+            self._cfg_device_name_label.setText("Select a device")
             self._cfg_stack.setCurrentIndex(0)
             self._cfg_reload_btn.setEnabled(False)
         except Exception:
@@ -1191,9 +1291,18 @@ class Main(QtWidgets.QWidget):
     # -- Configuration tab actions ---------------------------------------
 
     def _lua_scan(self) -> None:
+        self._cfg_scan_btn.setEnabled(False)
+        self._cfg_scan_btn.setText("Scanning...")
+        self._cfg_device_label.setText("Scanning for devices...")
+        self._cfg_device_label.setVisible(True)
         self.lua.scan_devices()
         self._cfg_stack.setCurrentIndex(0)
         self._cfg_reload_btn.setEnabled(False)
+
+    def _on_tab_changed(self, index: int) -> None:
+        if index == 1 and self._params_tab_first_visit:
+            self._params_tab_first_visit = False
+            self._lua_scan()
 
     def _lua_reload(self) -> None:
         if self.lua.selected_device:
@@ -1203,6 +1312,8 @@ class Main(QtWidgets.QWidget):
             self.lua.load_parameters()
 
     def _lua_select_device(self, device: dict) -> None:
+        name = device.get('name', '???')
+        self._cfg_device_name_label.setText(name)
         self._cfg_loading_label.setText(
             f"Loading parameters... (0/{device.get('parametersTotal', '?')})"
         )
