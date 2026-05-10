@@ -85,6 +85,7 @@ class LuaStateMachine:
         self.on_debug:            Callable[[str], None]         = lambda _: None
         self.on_elrs_error:       Callable[[str], None]         = lambda _: None
         self.on_elrs_confirm:     Callable[[str, int], None]    = lambda _m, _n: None
+        self.on_elrs_status:      Callable[[int, int, int], None] = lambda _b, _g, _f: None
 
         self._init_state()
 
@@ -689,6 +690,8 @@ class LuaStateMachine:
         flags_changed = new_flags != self.elrs_flags
         self.elrs_flags      = new_flags
         self.elrs_flags_info = msg
+
+        self.on_elrs_status(bad_pkt, good_pkt, new_flags)
 
         if flags_changed and new_flags > 0x1F and msg:
             self.on_elrs_error(msg)

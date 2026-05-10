@@ -23,7 +23,7 @@ from channel_ui import ChannelRow, SRC_CHOICES
 from config_manager import ConfigManager, DEFAULT_BAUD, CHANNELS, DEFAULT_CFG
 from version import VERSION, GIT_SHA
 from crsf_state_machine import CRSFStateMachine
-from crsf_protocol import rf_mode_name, tx_power_name
+from crsf_protocol import rf_mode_name, tx_power_name, CRSF_ADDRESS_MODULE
 from lua_state_machine import LuaStateMachine
 from device_parameters import (
     PARAM_TYPE_UINT8, PARAM_TYPE_INT8, PARAM_TYPE_TEXT_SELECTION,
@@ -204,6 +204,7 @@ class Main(QtWidgets.QWidget):
         self.lua.on_debug            = self.onDebug
         self.lua.on_elrs_error       = self._lua_on_elrs_error
         self.lua.on_elrs_confirm     = self._lua_on_elrs_confirm
+        self.lua.on_elrs_status      = self._lua_on_elrs_status_update
         self._lua_confirm_param_num  = None
         self.crsf_state_machine.set_lua_callback(self.lua.handle_frame)
         self.crsf_state_machine.set_lua_tick_callback(self.lua.tick)
@@ -1160,6 +1161,27 @@ class Main(QtWidgets.QWidget):
         right_div.setFrameShadow(QtWidgets.QFrame.Sunken)
         right_layout.addWidget(right_div)
 
+        # Linkstat row: RX connection indicator + bad/good packet counters
+        self._cfg_linkstat_row = QtWidgets.QWidget()
+        linkstat_layout = QtWidgets.QHBoxLayout(self._cfg_linkstat_row)
+        linkstat_layout.setContentsMargins(2, 2, 2, 2)
+        linkstat_layout.setSpacing(8)
+        self._cfg_rx_status_label = QtWidgets.QLabel("--")
+        self._cfg_rx_status_label.setStyleSheet(
+            "color: #e0e0e0; background-color: #3c3c3c; border: 1px solid #555555;"
+            " border-radius: 3px; padding: 1px 6px;"
+        )
+        self._cfg_pkt_label = QtWidgets.QLabel("0/0")
+        self._cfg_pkt_label.setStyleSheet(
+            "color: #e0e0e0; background-color: #3c3c3c; border: 1px solid #555555;"
+            " border-radius: 3px; padding: 1px 6px; font-family: monospace;"
+        )
+        linkstat_layout.addWidget(self._cfg_rx_status_label)
+        linkstat_layout.addWidget(self._cfg_pkt_label)
+        linkstat_layout.addStretch()
+        self._cfg_linkstat_row.setVisible(False)
+        right_layout.addWidget(self._cfg_linkstat_row)
+
         # Stacked: 0 = empty/no selection, 1 = loading, 2 = params
         self._cfg_stack = QtWidgets.QStackedWidget()
 
@@ -1252,11 +1274,12 @@ class Main(QtWidgets.QWidget):
             self._cfg_device_name_label.setText("Select a device")
             self._cfg_stack.setCurrentIndex(0)
             self._cfg_reload_btn.setEnabled(False)
+            self._cfg_linkstat_row.setVisible(False)
         except Exception as e:
             self.onDebug(f"Config device list error: {e}")
 
     def _make_device_card(self, device: dict) -> QtWidgets.QFrame:
-        """Build a clickable device card matching the web UI style."""
+        """Build a clickable device card"""
         name     = device.get('name', '???')
         addr     = device.get('address', 0)
         n_params = device.get('parametersTotal', '?')
@@ -1327,6 +1350,23 @@ class Main(QtWidgets.QWidget):
 
     def _lua_on_field(self, param: dict) -> None:
         pass  # re-render happens in on_loading_complete after reload chain
+
+    def _lua_on_elrs_status_update(self, bad_pkt: int, good_pkt: int, flags: int) -> None:
+        try:
+            rx_connected = bool(flags & 0x01)
+            if rx_connected:
+                self._cfg_rx_status_label.setText("RX Connected")
+                self._cfg_rx_status_label.setStyleSheet(
+                    "color: #ffffff; background-color: #2e7d32; border-radius: 3px; padding: 1px 6px;"
+                )
+            else:
+                self._cfg_rx_status_label.setText("RX Disconnected")
+                self._cfg_rx_status_label.setStyleSheet(
+                    "color: #ffffff; background-color: #c62828; border-radius: 3px; padding: 1px 6px;"
+                )
+            self._cfg_pkt_label.setText(f"{bad_pkt}/{good_pkt}")
+        except Exception:
+            pass
 
     def _lua_set_banner_mode(self, mode: str) -> None:
         """Configure banner for 'error' (red, no Cancel) or 'confirm' (amber, with Cancel)."""
@@ -1411,13 +1451,13 @@ class Main(QtWidgets.QWidget):
         if card is not None:
             card.setStyleSheet("""
                 QFrame {
-                    border: 2px solid #F7931E;
+                    border: 2px solid #1e88e5;
                     border-radius: 4px;
                     background-color: #3c3c3c;
                 }
                 QFrame:hover {
                     background-color: #4a4a4a;
-                    border-color: #F7931E;
+                    border-color: #1e88e5;
                 }
             """)
         name = device.get('name', '???')
@@ -1427,6 +1467,16 @@ class Main(QtWidgets.QWidget):
         )
         self._cfg_progress.setValue(0)
         self._cfg_stack.setCurrentIndex(1)
+        is_elrs_tx = device.get('isElrs', False) and device.get('address') == CRSF_ADDRESS_MODULE
+        if is_elrs_tx:
+            _placeholder_style = (
+                "color: #e0e0e0; background-color: #3c3c3c; border: 1px solid #555555;"
+                " border-radius: 3px; padding: 1px 6px;"
+            )
+            self._cfg_rx_status_label.setText("--")
+            self._cfg_rx_status_label.setStyleSheet(_placeholder_style)
+            self._cfg_pkt_label.setText("--/--")
+        self._cfg_linkstat_row.setVisible(is_elrs_tx)
         self.lua.select_device(device)
 
     def _lua_back(self) -> None:
