@@ -54,6 +54,76 @@ CRSF_CHANNEL_MIN = 172     # ELRS canonical 11-bit min (~988µs)
 CRSF_CHANNEL_MAX = 1811    # ELRS canonical 11-bit max (~2012µs)
 
 # =============================================================================
+# Link Statistics Enum Lookup Tables
+# =============================================================================
+
+# CRSF uplink_tx_power index → display string
+# Mapping from TitanLRS POWERMGNT.cpp powerToCrsfPower()
+CRSF_TX_POWER_NAMES = {
+    0: "0mW",
+    1: "10mW",
+    2: "25mW",
+    3: "100mW",
+    4: "500mW",
+    5: "1000mW",
+    6: "2000mW",
+    7: "250mW",
+    8: "50mW",
+}
+
+# expresslrs_RFrates_e → display string
+# Labels match the LUA packet-rate strings in TitanLRS TXModuleParameters.cpp
+# (STR_LUA_PACKETRATES), with band appended. Prefixes: D=DVDA, F=FLRC, K=FSK, DK=FSK DVDA.
+# "Full" = 8-channel (OTA8) variant. Band suffixes added here for the link-stats display.
+CRSF_RF_MODE_NAMES = {
+    # 900 MHz (subGhz) — SX127X and LR1121 900
+    0:   "25Hz subGhz",
+    1:   "50Hz subGhz",
+    2:   "100Hz subGhz",
+    3:   "100Hz Full subGhz",
+    4:   "150Hz subGhz",
+    5:   "200Hz subGhz",
+    6:   "200Hz Full subGhz",
+    7:   "250Hz subGhz",
+    8:   "333Hz Full subGhz",
+    9:   "500Hz subGhz",
+    10:  "D50Hz subGhz",
+    11:  "K1000 Full subGhz",
+    # 2.4 GHz — SX128X and LR1121 2G4
+    20:  "25Hz 2.4GHz",
+    21:  "50Hz 2.4GHz",
+    22:  "100Hz 2.4GHz",
+    23:  "100Hz Full 2.4GHz",
+    24:  "150Hz 2.4GHz",
+    25:  "200Hz 2.4GHz",
+    26:  "200Hz Full 2.4GHz",
+    27:  "250Hz 2.4GHz",
+    28:  "333Hz Full 2.4GHz",
+    29:  "500Hz 2.4GHz",
+    30:  "D250 2.4GHz",
+    31:  "D500 2.4GHz",
+    32:  "F500 2.4GHz",
+    33:  "F1000 2.4GHz",
+    34:  "DK250 2.4GHz",
+    35:  "DK500 2.4GHz",
+    36:  "K1000 2.4GHz",
+    # X-Band — dual-band LR1121 (900 + 2.4 GHz simultaneous)
+    100: "X100Hz Full",
+    101: "X150Hz",
+}
+
+
+def rf_mode_name(value: int) -> str:
+    """Return a human-readable label for an expresslrs_RFrates_e value."""
+    return CRSF_RF_MODE_NAMES.get(value, str(value))
+
+
+def tx_power_name(value: int) -> str:
+    """Return a human-readable label for a CRSF uplink_tx_power index."""
+    return CRSF_TX_POWER_NAMES.get(value, str(value))
+
+
+# =============================================================================
 # CRC8 Lookup Table (Polynomial 0xD5)
 # =============================================================================
 

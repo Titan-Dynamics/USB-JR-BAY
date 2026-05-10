@@ -23,6 +23,7 @@ from channel_ui import ChannelRow, SRC_CHOICES
 from config_manager import ConfigManager, DEFAULT_BAUD, CHANNELS, DEFAULT_CFG
 from version import VERSION, GIT_SHA
 from crsf_state_machine import CRSFStateMachine
+from crsf_protocol import rf_mode_name, tx_power_name
 from lua_state_machine import LuaStateMachine
 from device_parameters import (
     PARAM_TYPE_UINT8, PARAM_TYPE_INT8, PARAM_TYPE_TEXT_SELECTION,
@@ -598,6 +599,10 @@ class Main(QtWidgets.QWidget):
                         label.setText(f"{value} dB")
                     elif key in ('LQ', 'TLQ'):
                         label.setText(f"{value}%")
+                    elif key == 'RFMD':
+                        label.setText(rf_mode_name(value))
+                    elif key == 'TPWR':
+                        label.setText(tx_power_name(value))
                     else:
                         label.setText(str(value))
                     
