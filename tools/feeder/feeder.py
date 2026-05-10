@@ -193,7 +193,6 @@ class Main(QtWidgets.QWidget):
         self.crsf_state_machine = CRSFStateMachine()
         self.crsf_state_machine.set_serial(self.serThread)
         self.crsf_state_machine.set_link_stats_callback(self.onLinkStats)
-        self.crsf_state_machine.set_sync_callback(self.onSyncStatus)
 
         # LUA state machine - ELRS parameter discovery and editing
         self.lua = LuaStateMachine(send=self.crsf_state_machine.queue_frame)
@@ -437,9 +436,6 @@ class Main(QtWidgets.QWidget):
         self.jrBayStatusLabel = QtWidgets.QLabel("Disconnected")
         self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
 
-        self.crsfStatusLabel = QtWidgets.QLabel("CRSF: no link")
-        self.crsfStatusLabel.setStyleSheet("color: red; font-weight: bold;")
-
         channels_tab_layout.addLayout(content_layout)
         self.tabs.addTab(channels_tab, "Controller")
 
@@ -448,6 +444,7 @@ class Main(QtWidgets.QWidget):
         self.tabs.addTab(params_tab, "Parameters")
 
         self._params_tab_first_visit = True
+        self._selected_card = None
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
         self.tabs.setCurrentIndex(0)
@@ -473,13 +470,6 @@ class Main(QtWidgets.QWidget):
 
         top_bar.addWidget(self.jrBayStatusLabel)
 
-        divider3 = QtWidgets.QFrame()
-        divider3.setFrameShape(QtWidgets.QFrame.VLine)
-        divider3.setFrameShadow(QtWidgets.QFrame.Sunken)
-        divider3.setLineWidth(2)
-        top_bar.addWidget(divider3)
-
-        top_bar.addWidget(self.crsfStatusLabel)
         top_bar.addStretch()
         top_bar.addSpacing(32)
         top_bar.addWidget(self.logging_enabled)
@@ -615,18 +605,6 @@ class Main(QtWidgets.QWidget):
         except Exception as e:
             self.onDebug(f"Error updating link stats: {e}")
 
-    def onSyncStatus(self, info):
-        """Update the CRSF link-state label (called inline from the GUI tick)."""
-        try:
-            if info is None:
-                self.crsfStatusLabel.setText("CRSF: no link")
-                self.crsfStatusLabel.setStyleSheet("color: red; font-weight: bold;")
-            else:
-                hz = info['rate_hz']
-                self.crsfStatusLabel.setText(f"CRSF: {hz:.0f} Hz")
-                self.crsfStatusLabel.setStyleSheet("color: white; font-weight: bold;")
-        except Exception:
-            pass
 
     def _update_gui(self, ch, axes, btns, joystick_connected):
         """Update GUI elements with computed channel values.
@@ -1068,8 +1046,16 @@ class Main(QtWidgets.QWidget):
 
         # ---- Left panel: Devices ----------------------------------------
         left_panel = QtWidgets.QFrame()
+        left_panel.setObjectName("devicesPanel")
         left_panel.setFrameShape(QtWidgets.QFrame.StyledPanel)
         left_panel.setFrameShadow(QtWidgets.QFrame.Raised)
+        left_panel.setStyleSheet("""
+            QFrame#devicesPanel {
+                background-color: #2a2a2a;
+                border: 1px solid #4a4a4a;
+                border-radius: 6px;
+            }
+        """)
         left_layout = QtWidgets.QVBoxLayout(left_panel)
         left_layout.setContentsMargins(6, 6, 6, 6)
         left_layout.setSpacing(4)
@@ -1109,8 +1095,16 @@ class Main(QtWidgets.QWidget):
 
         # ---- Right panel: Parameters ------------------------------------
         right_panel = QtWidgets.QFrame()
+        right_panel.setObjectName("paramsPanel")
         right_panel.setFrameShape(QtWidgets.QFrame.StyledPanel)
         right_panel.setFrameShadow(QtWidgets.QFrame.Raised)
+        right_panel.setStyleSheet("""
+            QFrame#paramsPanel {
+                background-color: #2a2a2a;
+                border: 1px solid #4a4a4a;
+                border-radius: 6px;
+            }
+        """)
         right_layout = QtWidgets.QVBoxLayout(right_panel)
         right_layout.setContentsMargins(6, 6, 6, 6)
         right_layout.setSpacing(4)
@@ -1218,6 +1212,7 @@ class Main(QtWidgets.QWidget):
                 self._cfg_device_label.setText("No devices found.")
                 self._cfg_device_label.setVisible(True)
 
+            self._selected_card = None
             self._cfg_scan_btn.setEnabled(True)
             self._cfg_scan_btn.setText("Reload")
             self._cfg_device_name_label.setText("Select a device")
@@ -1265,7 +1260,7 @@ class Main(QtWidgets.QWidget):
         card_layout.addWidget(count_lbl)
 
         dev = device
-        card.mousePressEvent = lambda e, d=dev: self._lua_select_device(d)
+        card.mousePressEvent = lambda e, d=dev, c=card: self._lua_select_device(d, c)
 
         return card
 
@@ -1322,7 +1317,32 @@ class Main(QtWidgets.QWidget):
             self._cfg_stack.setCurrentIndex(1)
             self.lua.load_parameters()
 
-    def _lua_select_device(self, device: dict) -> None:
+    def _lua_select_device(self, device: dict, card: QtWidgets.QFrame = None) -> None:
+        if self._selected_card is not None:
+            self._selected_card.setStyleSheet("""
+                QFrame {
+                    border: 1px solid #555555;
+                    border-radius: 4px;
+                    background-color: #3c3c3c;
+                }
+                QFrame:hover {
+                    background-color: #4a4a4a;
+                    border-color: #888888;
+                }
+            """)
+        self._selected_card = card
+        if card is not None:
+            card.setStyleSheet("""
+                QFrame {
+                    border: 2px solid #F7931E;
+                    border-radius: 4px;
+                    background-color: #3c3c3c;
+                }
+                QFrame:hover {
+                    background-color: #4a4a4a;
+                    border-color: #F7931E;
+                }
+            """)
         name = device.get('name', '???')
         self._cfg_device_name_label.setText(name)
         self._cfg_loading_label.setText(
