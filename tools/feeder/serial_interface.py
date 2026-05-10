@@ -51,6 +51,7 @@ class SerialInterface(QtCore.QObject):
         self.running = True
         self._last_status = False
         self._initial_connect_attempted = False
+        self._last_connect_error = None  # suppress repeated identical failure messages
 
     def _connect(self):
         """Attempt to connect to the serial port."""
@@ -63,10 +64,14 @@ class SerialInterface(QtCore.QObject):
             self.ser = serial.Serial(self.port, self.baud, timeout=0.001, write_timeout=0.05)
             # Flush any stale data from the input buffer
             self.ser.reset_input_buffer()
+            self._last_connect_error = None
             self.debug.emit(f"Connected to {self.port} @ {self.baud} baud")
             self._update_status()
         except Exception as e:
-            self.debug.emit(f"Failed to connect to {self.port}: {e}")
+            err = str(e)
+            if err != self._last_connect_error:
+                self._last_connect_error = err
+                self.debug.emit(f"Failed to connect to {self.port}: {e}")
             self.ser = None
             self._update_status()
 
@@ -79,6 +84,17 @@ class SerialInterface(QtCore.QObject):
                 self.connection_status.emit(is_connected)
             except Exception as e:
                 print(f"Error emitting connection status: {e}")
+
+    def _handle_disconnect(self):
+        """Close a broken port so the run loop will reconnect."""
+        try:
+            if self.ser:
+                self.ser.close()
+        except Exception:
+            pass
+        self.ser = None
+        self._last_connect_error = None  # allow first reconnect failure to be logged
+        self._update_status()
 
     def reconnect(self, port, baud):
         """Reconnect with new port/baud settings.
@@ -102,6 +118,7 @@ class SerialInterface(QtCore.QObject):
                 return self.ser.in_waiting
             except Exception as e:
                 self.debug.emit(f"Error checking available bytes: {e}")
+                self._handle_disconnect()
         return 0
 
     def read(self) -> int:
@@ -117,6 +134,7 @@ class SerialInterface(QtCore.QObject):
                     return data[0]
             except Exception as e:
                 self.debug.emit(f"Error reading from serial: {e}")
+                self._handle_disconnect()
         return -1
 
     def read_bulk(self, n: int) -> bytes:
@@ -134,6 +152,7 @@ class SerialInterface(QtCore.QObject):
                 return data if data else b''
             except Exception as e:
                 self.debug.emit(f"Error bulk reading from serial: {e}")
+                self._handle_disconnect()
         return b''
 
     def write(self, data: bytes) -> int:
@@ -153,6 +172,7 @@ class SerialInterface(QtCore.QObject):
                 return 0
             except Exception as e:
                 self.debug.emit(f"Error writing to serial: {e}")
+                self._handle_disconnect()
         return 0
 
     def close(self):

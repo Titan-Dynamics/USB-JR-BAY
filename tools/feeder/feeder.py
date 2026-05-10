@@ -417,6 +417,12 @@ class Main(QtWidgets.QWidget):
                 break
         self.portCombo.currentTextChanged.connect(self._on_port_changed)
 
+        # If the saved port wasn't found (stale config), sync the serial thread
+        # to whatever port the combo defaulted to.
+        current_port = self.portCombo.currentData()
+        if current_port and current_port != self.cfg["serial_port"]:
+            self._on_port_changed(self.portCombo.currentText())
+
         self.refreshPortBtn = QtWidgets.QPushButton("Refresh")
         self.refreshPortBtn.clicked.connect(self._refresh_port_list)
         self.refreshPortBtn.setMaximumWidth(80)
