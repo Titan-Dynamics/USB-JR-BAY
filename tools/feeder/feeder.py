@@ -202,6 +202,9 @@ class Main(QtWidgets.QWidget):
         self.lua.on_loading_aborted  = self._lua_on_aborted
         self.lua.on_field_updated    = self._lua_on_field
         self.lua.on_debug            = self.onDebug
+        self.lua.on_elrs_error       = self._lua_on_elrs_error
+        self.lua.on_elrs_confirm     = self._lua_on_elrs_confirm
+        self._lua_confirm_param_num  = None
         self.crsf_state_machine.set_lua_callback(self.lua.handle_frame)
         self.crsf_state_machine.set_lua_tick_callback(self.lua.tick)
 
@@ -483,6 +486,37 @@ class Main(QtWidgets.QWidget):
         layout.addWidget(h_divider_top)
 
         layout.addWidget(self.tabs)
+
+        # LUA notification banner — used for both errors and command confirmations
+        self._lua_error_banner = QtWidgets.QFrame()
+        _banner_layout = QtWidgets.QHBoxLayout(self._lua_error_banner)
+        _banner_layout.setContentsMargins(10, 5, 10, 5)
+        self._lua_error_label = QtWidgets.QLabel()
+        self._lua_error_label.setStyleSheet(
+            "color: #ffffff; font-weight: bold; border: none; background: transparent;"
+        )
+        self._lua_error_label.setWordWrap(True)
+        _banner_btn_style = (
+            "QPushButton { background-color: #ffffff; color: #000000; border: none;"
+            " border-radius: 3px; padding: 2px 8px; font-weight: bold; }"
+            " QPushButton:hover { background-color: #e0e0e0; }"
+            " QPushButton:pressed { background-color: #bdbdbd; }"
+        )
+        self._lua_cancel_btn = QtWidgets.QPushButton("Cancel")
+        self._lua_cancel_btn.setFixedWidth(68)
+        self._lua_cancel_btn.setStyleSheet(_banner_btn_style)
+        self._lua_cancel_btn.clicked.connect(self._lua_confirm_cancel)
+        self._lua_ok_btn = QtWidgets.QPushButton("OK")
+        self._lua_ok_btn.setFixedWidth(60)
+        self._lua_ok_btn.setStyleSheet(_banner_btn_style)
+        self._lua_ok_btn.clicked.connect(self._lua_banner_ok)
+        _banner_layout.addWidget(self._lua_error_label, 1)
+        _banner_layout.addWidget(self._lua_cancel_btn)
+        _banner_layout.addWidget(self._lua_ok_btn)
+        self._lua_error_banner.setVisible(False)
+        self._lua_set_banner_mode('error')  # sets stylesheet + Cancel visibility
+        layout.addWidget(self._lua_error_banner)
+
         layout.addLayout(tel)
         layout.addWidget(self.console_container)
         layout.setStretch(2, 1)
@@ -1293,6 +1327,49 @@ class Main(QtWidgets.QWidget):
 
     def _lua_on_field(self, param: dict) -> None:
         pass  # re-render happens in on_loading_complete after reload chain
+
+    def _lua_set_banner_mode(self, mode: str) -> None:
+        """Configure banner for 'error' (red, no Cancel) or 'confirm' (amber, with Cancel)."""
+        if mode == 'error':
+            self._lua_error_banner.setStyleSheet(
+                "background-color: #c62828; border-radius: 4px;"
+            )
+            self._lua_cancel_btn.setVisible(False)
+        else:
+            self._lua_error_banner.setStyleSheet(
+                "background-color: #e65100; border-radius: 4px;"
+            )
+            self._lua_cancel_btn.setVisible(True)
+        self._lua_banner_mode = mode
+
+    def _lua_banner_ok(self) -> None:
+        """OK button: clear error or confirm command depending on current mode."""
+        self._lua_error_banner.setVisible(False)
+        if getattr(self, '_lua_banner_mode', 'error') == 'confirm':
+            if self._lua_confirm_param_num is not None:
+                self.lua.confirm_command(self._lua_confirm_param_num)
+            self._lua_confirm_param_num = None
+        else:
+            self.lua.clear_elrs_error()
+
+    def _lua_confirm_cancel(self) -> None:
+        """Cancel button: dismiss confirm banner without sending confirmation."""
+        self._lua_error_banner.setVisible(False)
+        self._lua_confirm_param_num = None
+        self.lua.cancel_command()
+
+    def _lua_on_elrs_error(self, msg: str) -> None:
+        """Show the error banner (e.g. 'Not while connected')."""
+        self._lua_set_banner_mode('error')
+        self._lua_error_label.setText(msg)
+        self._lua_error_banner.setVisible(True)
+
+    def _lua_on_elrs_confirm(self, msg: str, param_num: int) -> None:
+        """Show the confirmation banner (e.g. 'Enable WiFi while connected?')."""
+        self._lua_confirm_param_num = param_num
+        self._lua_set_banner_mode('confirm')
+        self._lua_error_label.setText(msg)
+        self._lua_error_banner.setVisible(True)
 
     # -- Configuration tab actions ---------------------------------------
 

@@ -66,6 +66,7 @@ class LuaStateMachine:
     PARAM_TIMEOUT_S      = 3.0  # scan.js: 3000 ms per-request timeout
     MAX_RETRIES          = 3    # scan.js: this.maxRetries
     MAX_CONSECUTIVE_FAIL = 3    # scan.js: consecutiveParamFailures threshold
+    LINKSTAT_POLL_S      = 1.0  # scan.js: startLinkstatPolling every 1000 ms
 
     def __init__(self, send: Callable[[bytes], bool]):
         """
@@ -82,6 +83,8 @@ class LuaStateMachine:
         self.on_loading_aborted:  Callable[[str], None]         = lambda _: None
         self.on_field_updated:    Callable[[dict], None]        = lambda _: None
         self.on_debug:            Callable[[str], None]         = lambda _: None
+        self.on_elrs_error:       Callable[[str], None]         = lambda _: None
+        self.on_elrs_confirm:     Callable[[str, int], None]    = lambda _m, _n: None
 
         self._init_state()
 
@@ -128,6 +131,7 @@ class LuaStateMachine:
         if not self.selected_device:
             return
         self._param_deadline = None
+        self._linkstat_poll_at = None  # stop polling while loading
         self._cancel_pending()
 
         self.parameters              = {}
@@ -174,13 +178,17 @@ class LuaStateMachine:
         if not self._send(frame):
             return False
 
-        # Optimistic local update (scan.js:1708) for snappy UI.
-        param['value'] = value
-
-        # Reload related fields after a short delay (scan.js:1712-1714).
-        # "Delay" in single-threaded land means "fire on the tick after 200ms".
-        self._reload_after_write_at    = time.monotonic() + 0.2
-        self._reload_after_write_param = param
+        if t == PARAM_TYPE_COMMAND:
+            # Track this command so spontaneous status-update PARAM_ENTRYs
+            # (e.g. status=3 confirmation request) can be matched and handled.
+            # Do NOT overwrite param['value'] — it holds the button label string.
+            self._pending_command_num = param_num
+        else:
+            # Optimistic local update (scan.js:1708) for snappy UI.
+            param['value'] = value
+            # Reload related fields after a short delay (scan.js:1712-1714).
+            self._reload_after_write_at    = time.monotonic() + 0.2
+            self._reload_after_write_param = param
         return True
 
     def navigate_to_folder(self, folder_id: int, name: str) -> None:
@@ -214,7 +222,7 @@ class LuaStateMachine:
         elif t == CRSF_FRAMETYPE_PARAMETER_SETTINGS_ENTRY:
             self._on_param_entry(frame.get('payload', b''))
         elif t == CRSF_FRAMETYPE_ELRS_STATUS:
-            pass  # v2: connection chip + error popup
+            self._on_elrs_status(frame.get('payload', b''))
 
     def tick(self, now: float) -> None:
         """Advance all tick-driven timers. Call once per GUI tick.
@@ -238,6 +246,22 @@ class LuaStateMachine:
             self._param_deadline = None
             self._on_param_timeout(self.pending_param_number,
                                    self.pending_chunk_number, now)
+
+        # ELRS_STATUS polling — send PARAM_WRITE [0, 0] every second so the
+        # firmware replies with status flags + error message.
+        # Mirrors startLinkstatPolling / pollLinkstat (scan.js:1899-1943).
+        if (self._linkstat_poll_at is not None
+                and now >= self._linkstat_poll_at
+                and self.selected_device is not None
+                and not self.is_loading):
+            self._linkstat_poll_at = now + self.LINKSTAT_POLL_S
+            frame = build_param_write(
+                device_addr=self.selected_device['address'],
+                origin_addr=self.origin_address,
+                param_index=0,
+                value=0,
+            )
+            self._send(frame)
 
     def reset(self) -> None:
         """Clear all state. Call when the serial connection drops."""
@@ -278,6 +302,11 @@ class LuaStateMachine:
         self._param_deadline:           Optional[float] = None
         self._reload_after_write_at:    Optional[float] = None
         self._reload_after_write_param: Optional[dict]  = None
+        self._linkstat_poll_at:         Optional[float] = None
+        self._pending_command_num:      Optional[int]   = None
+
+        self.elrs_flags:      int = 0
+        self.elrs_flags_info: str = ''
 
     def _cancel_pending(self) -> None:
         """Clear all in-progress reload/retry-missing state."""
@@ -409,8 +438,15 @@ class LuaStateMachine:
         chunk_data      = hdr['chunk_data']
 
         if param_number != self.pending_param_number:
-            self.on_debug(f"[LUA] PARAM_ENTRY dropped: got param {param_number} but pending is {self.pending_param_number}")
-            return  # firmware sends extra copies; silently ignore (matches web UI)
+            # Check for a spontaneous command status update (e.g. status=3 confirm).
+            # Mirrors scan.js isCommandPoll check in handleParamEntry.
+            if (self._pending_command_num is not None
+                    and param_number == self._pending_command_num
+                    and chunks_remaining == 0):
+                self._handle_command_status(param_number, chunk_data)
+            else:
+                self.on_debug(f"[LUA] PARAM_ENTRY dropped: got param {param_number} but pending is {self.pending_param_number}")
+            return
 
         # Firmware sends each chunk response twice for reliability; deduplicate
         # by tracking which chunks_remaining values have already been processed.
@@ -505,6 +541,9 @@ class LuaStateMachine:
         self._retry_missing_in_progress = False
         self._param_deadline = None
         self.on_loading_complete(dict(self.parameters))
+        # Start ELRS_STATUS polling now that params are loaded.
+        # Mirrors startLinkstatPolling (scan.js:1637).
+        self._linkstat_poll_at = time.monotonic() + self.LINKSTAT_POLL_S
 
     def _reload_related_fields(self, param: dict, now: float) -> None:
         """Re-fetch the written field, its parent folder, and editable siblings.
@@ -561,6 +600,114 @@ class LuaStateMachine:
 
         self._reload_in_progress = False
         self.on_loading_complete(dict(self.parameters))
+
+    def _handle_command_status(self, param_num: int, data: bytes) -> None:
+        """Process a spontaneous PARAM_ENTRY for the active command.
+
+        Mirrors handleCommandStatusUpdate (scan.js:1993-2045).
+        Called when the firmware sends an unsolicited status update, e.g.
+        status=3 (CONFIRM_REQUIRED) for "Enable WiFi while connected".
+        """
+        param = parse_parameter(param_num, data)
+        if param is None or param['type'] != PARAM_TYPE_COMMAND:
+            return
+        status = param.get('status') or 0
+        msg    = param.get('value') or ''
+        self.on_debug(f"[LUA] COMMAND param={param_num} status={status} msg={msg!r}")
+        if status == 3:  # lcsConfirmation — matching scan.js:2009
+            self.on_elrs_confirm(msg, param_num)
+        elif status == 0:  # done / idle
+            self._pending_command_num = None
+
+    def confirm_command(self, param_num: int) -> None:
+        """Send status=4 (CONFIRMED) for the active command.
+
+        Mirrors the confirm branch in handleCommandStatusUpdate (scan.js:2018-2025).
+        """
+        self._pending_command_num = None
+        if not self.selected_device:
+            return
+        frame = build_param_write(
+            device_addr=self.selected_device['address'],
+            origin_addr=self.origin_address,
+            param_index=param_num,
+            value=4,  # lcsConfirmed
+        )
+        self._send(frame)
+
+    def cancel_command(self) -> None:
+        """Discard the active command without sending a confirmation.
+
+        Mirrors the cancel branch in handleCommandStatusUpdate (scan.js:2027-2030):
+        LUA just clears the popup; does NOT send status=5.
+        """
+        self._pending_command_num = None
+
+    def _on_elrs_status(self, payload: bytes) -> None:
+        """Handle ELRS_STATUS (0x2E) frame — error popup and flag tracking.
+
+        Mirrors handleELRSStatus (scan.js:1053-1126).
+        Payload layout from CRSFFrameDecoder (extended frame, dst+src at [0:2]):
+            [0]    dst
+            [1]    src
+            [2]    bad_pkt (uint8)
+            [3]    good_pkt high byte
+            [4]    good_pkt low byte  (big-endian uint16)
+            [5]    flags (uint8)
+            [6:]   null-terminated error message
+        """
+        self.on_debug(f"[LUA] ELRS_STATUS raw: len={len(payload)} hex={payload.hex()}")
+        if not self.selected_device:
+            self.on_debug("[LUA] ELRS_STATUS dropped: no selected device")
+            return
+        if len(payload) < 6:
+            self.on_debug(f"[LUA] ELRS_STATUS dropped: too short ({len(payload)} bytes)")
+            return
+        src = payload[1]
+        if src != self.selected_device.get('address'):
+            self.on_debug(f"[LUA] ELRS_STATUS dropped: src={src:#04x} != device={self.selected_device.get('address'):#04x}")
+            return
+
+        data = payload[2:]
+        bad_pkt  = data[0]
+        good_pkt = (data[1] << 8) | data[2]
+        new_flags = data[3]
+
+        msg = ''
+        if len(data) > 4:
+            msg_bytes = data[4:]
+            null_pos = msg_bytes.find(b'\x00')
+            if null_pos >= 0:
+                msg_bytes = msg_bytes[:null_pos]
+            msg = msg_bytes.decode('ascii', errors='replace')
+
+        self.on_debug(
+            f"[LUA] ELRS_STATUS: bad={bad_pkt} good={good_pkt} "
+            f"flags={new_flags:#04x} msg={msg!r}"
+        )
+
+        flags_changed = new_flags != self.elrs_flags
+        self.elrs_flags      = new_flags
+        self.elrs_flags_info = msg
+
+        if flags_changed and new_flags > 0x1F and msg:
+            self.on_elrs_error(msg)
+
+    def clear_elrs_error(self) -> None:
+        """Send the error-clear command after the user dismisses the error popup.
+
+        Mirrors the .then() in handleELRSStatus (scan.js:1120-1123):
+            clearCmd = [0x2E, 0x00]  (PARAM_WRITE, param_index=0x2E, value=0x00)
+        """
+        if not self.selected_device:
+            return
+        frame = build_param_write(
+            device_addr=self.selected_device['address'],
+            origin_addr=self.origin_address,
+            param_index=0x2E,
+            value=0x00,
+        )
+        self._send(frame)
 
     def _abort_loading(self, message: str) -> None:
         """Abort the load sequence and notify the UI.
