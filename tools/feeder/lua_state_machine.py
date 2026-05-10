@@ -284,6 +284,7 @@ class LuaStateMachine:
         self.pending_chunk_number:      int             = 0
         self.pending_chunks:            List[bytes]     = []
         self._seen_chunks_remaining:    Set[int]        = set()
+        self._last_completed_param_num: int             = 0
         self.is_loading:                bool            = False
         self.retry_count:               int             = 0
         self.missing_params:            Set[int]        = set()
@@ -445,7 +446,18 @@ class LuaStateMachine:
                     and param_number == self._pending_command_num
                     and chunks_remaining == 0):
                 self._handle_command_status(param_number, chunk_data)
+            elif (param_number == self._last_completed_param_num
+                    and chunks_remaining == 0):
+                # The protocol sends every final chunk twice. The duplicate arrives
+                # after we've already advanced pending_param_number, so the mismatch
+                # check fires before the dedup set can catch it. Silently ignore.
+                self.on_debug(
+                    f"[LUA] PARAM_ENTRY dedup: late duplicate final chunk for param {param_number}, ignoring"
+                )
             else:
+                # Unexpected param — clear any partial collection (mirrors LUA fieldData=nil reset).
+                self.pending_chunks = []
+                self._seen_chunks_remaining = set()
                 self.on_debug(f"[LUA] PARAM_ENTRY dropped: got param {param_number} but pending is {self.pending_param_number}")
             return
 
@@ -482,6 +494,10 @@ class LuaStateMachine:
                     self.loaded_count += 1
                     self.on_loading_progress(self.loaded_count, self.parameter_count)
                 self.on_field_updated(param)
+
+            # Record the completed param so the pending-number mismatch check
+            # can recognise the duplicate final chunk that always follows.
+            self._last_completed_param_num = param_number
 
             now = time.monotonic()
             if self._reload_in_progress:

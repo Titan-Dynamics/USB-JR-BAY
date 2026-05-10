@@ -1752,6 +1752,16 @@ def create_checkmark_icon(color='#ffffff', size=16):
 
 
 if __name__ == "__main__":
+    # Raise Windows system timer resolution from 15.6 ms to 1 ms so that
+    # QTimer(0) fires at ~1 kHz instead of ~64 Hz. Required for stable 1000 Hz
+    # RC output; harmless on macOS/Linux where the kernel is already fine-grained.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.winmm.timeBeginPeriod(1)
+        except Exception:
+            pass
+
     app = QtWidgets.QApplication(sys.argv)
 
     # Create temporary directory for icons

@@ -259,6 +259,36 @@ class TestLoadParameters(unittest.TestCase):
         self.assertIn(1, self.lua.parameters)
         self.assertEqual(len(updated), 1)
 
+    def test_duplicate_final_chunk_is_silently_ignored(self):
+        """Firmware always sends the final chunk twice.
+
+        The duplicate arrives after pending_param_number has advanced, so the
+        dedup set is already cleared.  It must be recognised as a late duplicate
+        (not re-parsed and not logged as 'dropped').
+        """
+        updated = []
+        self.lua.on_field_updated = lambda p: updated.append(p)
+        dropped_msgs = []
+        self.lua.on_debug = lambda msg: dropped_msgs.append(msg) if 'dropped' in msg else None
+        self.lua.load_parameters()
+        self.send.queued = []
+
+        blob = _uint8_blob(0, 'TX Power', 10)
+        frame = _build_param_entry_frame(
+            CRSF_ADDRESS_ELRS_LUA, CRSF_ADDRESS_MODULE, 1, 0, blob
+        )
+
+        # First copy: param 1 is parsed, pending advances to 2.
+        self.lua.handle_frame(frame)
+        self.assertEqual(self.lua.loaded_count, 1)
+        self.assertIn(1, self.lua.parameters)
+
+        # Second copy (late duplicate): must not re-parse and must not 'drop'.
+        self.lua.handle_frame(frame)
+        self.assertEqual(self.lua.loaded_count, 1)
+        self.assertEqual(len(updated), 1)
+        self.assertEqual(dropped_msgs, [])
+
     def test_duplicate_chunk_frames_are_deduplicated(self):
         """Firmware sends each non-final chunk twice; only one copy must be used."""
         updated = []

@@ -24,7 +24,13 @@ from crsf_protocol import (
     CRSF_FRAMETYPE_ELRS_STATUS,
 )
 
-_MAX_CATCHUP = 5
+# On Windows, QTimer(0) fires at ~64–250 Hz (15.6 ms OS quantum) rather than
+# the near-continuous rate on macOS/Linux. With a 1 ms RC interval the old
+# value of 5 set the reset threshold to 5 ms, which fired on every Windows
+# tick and capped throughput to ~100–250 frames/sec instead of ~1000.
+# 25 gives a 25 ms threshold: covers Windows 64 Hz (15.6 ms) ticks without
+# triggering a reset, while still resetting after any real stall (e.g. sleep).
+_MAX_CATCHUP = 25
 _LOST_SYNC_AFTER_S = 2.0
 
 
@@ -255,7 +261,18 @@ class CRSFStateMachine:
                 return
             rate_us, offset_us = sync
             self._interval_s = rate_us / 1_000_000
-            self._next_send += offset_us / 1_000_000  # one-shot phase correction
+            # Phase correction: only apply on first lock acquisition.
+            # The TX sends RADIO_ID after every processed RC frame (~1000/sec on
+            # 1000 Hz mode). Applying offset_us on every packet compounds into a
+            # permanent rate shift: at -276 µs/packet × 1000 packets/sec the
+            # schedule compresses by 276 ms/sec → ~1380 Hz instead of 1000 Hz.
+            # Windows USB-CDC adds a fixed ~200-400 µs latency that the phase
+            # correction cannot eliminate (we send earlier but USB eats the gain),
+            # so the offset never converges to zero and the rate stays elevated.
+            # One-shot on lock acquisition aligns the initial phase; after that
+            # _interval_s alone tracks the rate correctly.
+            if not self._sync_locked:
+                self._next_send += offset_us / 1_000_000
             self._last_sync_recv = time.monotonic()
             self._sync_locked = True
             if self.sync_callback:
