@@ -425,7 +425,10 @@ class Main(QtWidgets.QWidget):
         # to whatever port the combo defaulted to.
         current_port = self.portCombo.currentData()
         if current_port and current_port != self.cfg["serial_port"]:
-            self._on_port_changed(self.portCombo.currentText())
+            # Defer until after the GUI is fully constructed so that
+            # jrBayStatusLabel exists when onConnectionStatus fires.
+            _port_text = self.portCombo.currentText()
+            QtCore.QTimer.singleShot(0, lambda: self._on_port_changed(_port_text))
 
         self.refreshPortBtn = QtWidgets.QPushButton("Refresh")
         self.refreshPortBtn.clicked.connect(self._refresh_port_list)
