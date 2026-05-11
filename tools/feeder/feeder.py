@@ -348,7 +348,7 @@ class Main(QtWidgets.QWidget):
             box = QtWidgets.QGroupBox(key)
             lab = QtWidgets.QLabel("--")
             lab.setAlignment(QtCore.Qt.AlignCenter | QtCore.Qt.AlignVCenter)
-            f = lab.font(); f.setPointSize(14); lab.setFont(f)
+            f = lab.font(); f.setPointSize(11); lab.setFont(f)
             v = QtWidgets.QVBoxLayout(box)
             v.setContentsMargins(0, 0, 0, 10)
             v.addWidget(lab, alignment=QtCore.Qt.AlignCenter)
