@@ -423,16 +423,8 @@ class LuaStateMachine:
         """
         hdr = parse_param_entry_header(payload)
         if hdr is None:
-            self.on_debug(f"[LUA] PARAM_ENTRY: parse_param_entry_header returned None for payload len={len(payload)}")
             return
-        self.on_debug(
-            f"[LUA] PARAM_ENTRY raw: field_id={hdr['field_id']} chunks_remaining={hdr['chunks_remaining']} "
-            f"chunk_size={len(hdr['chunk_data'])} src={hdr['src']:#04x} "
-            f"pending={self.pending_param_number} "
-            f"first4={hdr['chunk_data'][:4].hex() if hdr['chunk_data'] else '(empty)'}"
-        )
         if not self.selected_device or hdr['src'] != self.selected_device.get('address'):
-            self.on_debug(f"[LUA] PARAM_ENTRY dropped: src mismatch or no selected device")
             return
 
         param_number    = hdr['field_id']
@@ -451,20 +443,16 @@ class LuaStateMachine:
                 # The protocol sends every final chunk twice. The duplicate arrives
                 # after we've already advanced pending_param_number, so the mismatch
                 # check fires before the dedup set can catch it. Silently ignore.
-                self.on_debug(
-                    f"[LUA] PARAM_ENTRY dedup: late duplicate final chunk for param {param_number}, ignoring"
-                )
+                pass
             else:
                 # Unexpected param — clear any partial collection (mirrors LUA fieldData=nil reset).
                 self.pending_chunks = []
                 self._seen_chunks_remaining = set()
-                self.on_debug(f"[LUA] PARAM_ENTRY dropped: got param {param_number} but pending is {self.pending_param_number}")
             return
 
         # Firmware sends each chunk response twice for reliability; deduplicate
         # by tracking which chunks_remaining values have already been processed.
         if chunks_remaining in self._seen_chunks_remaining:
-            self.on_debug(f"[LUA] PARAM_ENTRY dedup: param {param_number} chunks_remaining={chunks_remaining} already seen, skipping")
             return
         self._seen_chunks_remaining.add(chunks_remaining)
 
@@ -479,17 +467,8 @@ class LuaStateMachine:
             full = b''.join(self.pending_chunks)
             self.pending_chunks = []
             param = parse_parameter(param_number, full)
-            self.on_debug(
-                f"[LUA] PARAM_ENTRY parse result: param_number={param_number} "
-                f"full_len={len(full)} parse_result={'None' if param is None else repr({'type': param['type'], 'name': param['name'], 'value': param['value']})}"
-            )
             if param is not None:
                 self.parameters[param_number] = param
-                if param['type'] == PARAM_TYPE_TEXT_SELECTION:
-                    self.on_debug(
-                        f"[LUA] TEXT_SEL param {param_number} {param['name']!r}  "
-                        f"value={param['value']}  options={param['options']!r}"
-                    )
                 if self.is_loading:
                     self.loaded_count += 1
                     self.on_loading_progress(self.loaded_count, self.parameter_count)
@@ -630,7 +609,6 @@ class LuaStateMachine:
             return
         status = param.get('status') or 0
         msg    = param.get('value') or ''
-        self.on_debug(f"[LUA] COMMAND param={param_num} status={status} msg={msg!r}")
         if status == 3:  # lcsConfirmation — matching scan.js:2009
             self.on_elrs_confirm(msg, param_num)
         elif status == 0:  # done / idle
@@ -673,16 +651,12 @@ class LuaStateMachine:
             [5]    flags (uint8)
             [6:]   null-terminated error message
         """
-        self.on_debug(f"[LUA] ELRS_STATUS raw: len={len(payload)} hex={payload.hex()}")
         if not self.selected_device:
-            self.on_debug("[LUA] ELRS_STATUS dropped: no selected device")
             return
         if len(payload) < 6:
-            self.on_debug(f"[LUA] ELRS_STATUS dropped: too short ({len(payload)} bytes)")
             return
         src = payload[1]
         if src != self.selected_device.get('address'):
-            self.on_debug(f"[LUA] ELRS_STATUS dropped: src={src:#04x} != device={self.selected_device.get('address'):#04x}")
             return
 
         data = payload[2:]
@@ -697,11 +671,6 @@ class LuaStateMachine:
             if null_pos >= 0:
                 msg_bytes = msg_bytes[:null_pos]
             msg = msg_bytes.decode('ascii', errors='replace')
-
-        self.on_debug(
-            f"[LUA] ELRS_STATUS: bad={bad_pkt} good={good_pkt} "
-            f"flags={new_flags:#04x} msg={msg!r}"
-        )
 
         flags_changed = new_flags != self.elrs_flags
         self.elrs_flags      = new_flags
