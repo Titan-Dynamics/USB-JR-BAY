@@ -1,344 +1,197 @@
 """
-Device Parameter Parsing and Validation
+ELRS Parameter Parsing — pure stdlib, no Qt, no serial.
 
-This module handles parsing and validation of ELRS device parameters
-received via CRSF protocol.
+Mirrors CrsfParams.parseParameter and handleDeviceInfo from scan.js.
+All functions are pure and unit-testable without Qt or a serial port.
 """
 
+import struct
+from typing import Any, Dict, List, Optional, Tuple
 
-class DeviceParameterParser:
-    """Parser for ELRS device parameter fields."""
+# Parameter type codes — mirror scan.js:907-918 exactly.
+PARAM_TYPE_UINT8          = 0x00
+PARAM_TYPE_INT8           = 0x01
+PARAM_TYPE_UINT16         = 0x02  # defined but not emitted by ELRS firmware
+PARAM_TYPE_INT16          = 0x03  # defined but not emitted by ELRS firmware
+PARAM_TYPE_FLOAT          = 0x08  # defined but not emitted by ELRS firmware
+PARAM_TYPE_TEXT_SELECTION = 0x09
+PARAM_TYPE_STRING         = 0x0A
+PARAM_TYPE_FOLDER         = 0x0B
+PARAM_TYPE_INFO           = 0x0C
+PARAM_TYPE_COMMAND        = 0x0D
+PARAM_HIDDEN_BIT          = 0x80
+PARAM_TYPE_MASK           = 0x3F  # NOT 0x7F — bit 6 is reserved, bit 7 is hidden
 
-    @staticmethod
-    def parse_field_blob(data: bytes) -> dict:
-        """Parse a single field blob (full assembled data for a parameter) into a dictionary.
-
-        Args:
-            data: Raw parameter field data bytes
-
-        Returns:
-            Dictionary with parsed field information including:
-            - parent, type, hidden, name
-            - values (for selection fields)
-            - min/max/default/unit (for numeric fields)
-            - status, info (for command fields)
-        """
-        out = {}
-        if len(data) < 3:
-            out["raw"] = data.hex()
-            return out
-
-        def read_cstr(buf, off):
-            """Read null-terminated C string from buffer."""
-            s = []
-            while off < len(buf) and buf[off] != 0:
-                s.append(buf[off])
-                off += 1
-            try:
-                val = bytes(s).decode(errors="ignore")
-            except Exception:
-                val = ""
-            return val, off + 1 if off < len(buf) and buf[off] == 0 else off
-
-        def read_opts(buf, off):
-            """Read semicolon-separated option list."""
-            vals = []
-            cur = []
-            while off < len(buf) and buf[off] != 0:
-                b = buf[off]
-                off += 1
-                if b == 59:  # ';'
-                    s = bytes(cur).decode(errors="ignore") if cur else ""
-                    if s != "":
-                        vals.append(s.strip())
-                    cur = []
-                else:
-                    cur.append(b)
-            # final
-            if cur:
-                s = bytes(cur).decode(errors="ignore")
-                if s != "":
-                    vals.append(s.strip())
-            return vals, (off + 1 if off < len(buf) and buf[off] == 0 else off)
-
-        def read_uint(buf, off, size):
-            """Read unsigned integer of given byte size (big-endian)."""
-            v = 0
-            for i in range(size):
-                if off + i < len(buf):
-                    v = (v << 8) + buf[off + i]
-            return v
-
-        offset = 0
-        parent = data[offset]
-        offset += 1
-        ftype = data[offset] & 0x7F
-        hidden = bool(data[offset] & 0x80)
-        offset += 1
-        out["parent"] = parent
-        out["type"] = ftype
-        out["hidden"] = hidden
-
-        # Name string
-        name, offset = read_cstr(data, offset)
-        out["name"] = name
-
-        # Text selection (type 9)
-        if ftype == 9:
-            vals, offset = read_opts(data, offset)
-            out["values"] = vals
-            # selection index is next byte if present
-            if offset < len(data):
-                out["value"] = data[offset]
-                offset += 1
-            # unit may follow
-            if offset < len(data) and data[offset] != 0:
-                unit, offset = read_cstr(data, offset)
-                out["unit"] = unit
-
-        # Numeric values: determine size and signedness
-        if 0 <= ftype <= 8:
-            # size in bytes: floor(ftype / 2) + 1
-            size = (ftype // 2) + 1
-            is_signed = (ftype % 2) == 1
-            # value at current offset, followed by min/max/default
-            if offset + size <= len(data):
-                out["value"] = read_uint(data, offset, size)
-            if offset + size * 2 <= len(data):
-                out["min"] = read_uint(data, offset + size, size)
-            if offset + size * 3 <= len(data):
-                out["max"] = read_uint(data, offset + size * 2, size)
-            if offset + size * 4 <= len(data):
-                out["default"] = read_uint(data, offset + size * 3, size)
-
-            # convert unsigned to signed range if required
-            if is_signed:
-                def signed_val(v, s):
-                    """Convert unsigned to signed 2's complement."""
-                    band = 1 << (s * 8 - 1)
-                    if v & band:
-                        v = v - (1 << (s * 8))
-                    return v
-
-                if "value" in out:
-                    out["value"] = signed_val(out["value"], size)
-                if "min" in out:
-                    out["min"] = signed_val(out["min"], size)
-                if "max" in out:
-                    out["max"] = signed_val(out["max"], size)
-                if "default" in out:
-                    out["default"] = signed_val(out["default"], size)
-
-        # Float type (8)
-        if ftype == 8:
-            if offset + 4 <= len(data):
-                out["value_raw"] = read_uint(data, offset, 4)
-            if offset + 8 <= len(data):
-                out["min"] = read_uint(data, offset + 4, 4)
-            if offset + 12 <= len(data):
-                out["max"] = read_uint(data, offset + 8, 4)
-            if offset + 16 <= len(data):
-                out["default"] = read_uint(data, offset + 12, 4)
-            if offset + 21 <= len(data):
-                out["prec"] = data[offset + 16]
-            if offset + 25 <= len(data):
-                out["step"] = read_uint(data, offset + 17, 4)
-            # convert raw values using precision
-            if "prec" in out and out["prec"] > 0:
-                div = 10 ** out["prec"]
-                try:
-                    out["value"] = out.get("value_raw", 0) / div
-                    if "min" in out:
-                        out["min"] = out["min"] / div
-                    if "max" in out:
-                        out["max"] = out["max"] / div
-                    if "default" in out:
-                        out["default"] = out["default"] / div
-                except Exception:
-                    pass
-
-        # String type (type 12/13)
-        if ftype == 12 or ftype == 13:
-            s, offset = read_cstr(data, offset)
-            out["value"] = s
-            # optional maxlen after string
-            if offset < len(data):
-                out["maxlen"] = data[offset]
-                offset += 1
-
-        # Command type (13)
-        if ftype == 13:
-            if offset + 1 <= len(data):
-                out["status"] = data[offset]
-                offset += 1
-            if offset + 1 <= len(data):
-                out["timeout"] = data[offset]
-                offset += 1
-            if offset < len(data):
-                s, offset = read_cstr(data, offset)
-                out["info"] = s
-
-        # Generic fallback: last byte as status if present
-        if len(data) > 0:
-            out["status"] = data[-1]
-
-        return out
-
-    @staticmethod
-    def validate_parsed_field(parsed: dict, field_id: int) -> bool:
-        """Validate a parsed field to detect corruption.
-
-        Args:
-            parsed: Parsed field dictionary
-            field_id: Field ID for logging
-
-        Returns:
-            True if the field appears valid, False if it should be re-read
-        """
-        try:
-            # Check if parse returned raw data only (indicates parse failure)
-            if "raw" in parsed and len(parsed) == 1:
-                return False
-
-            # Validate field type is in expected range (0-13 for known types)
-            ftype = parsed.get('type')
-            if ftype is None:
-                return False
-            if not (0 <= ftype <= 13):
-                return False
-
-            # For type 9 (combo/select), validate we have values list
-            if ftype == 9:
-                values = parsed.get('values', [])
-                if not isinstance(values, list) or len(values) == 0:
-                    return False
-                # Check that value index is within bounds
-                val_idx = parsed.get('value')
-                if val_idx is not None and val_idx < 0:
-                    return False
-
-            # For type 11 (folder/info), ensure we have a name
-            if ftype == 11:
-                name = parsed.get('name', '')
-                if not name or len(name) == 0:
-                    return False
-
-            # Basic sanity check: all fields should have a name
-            name = parsed.get('name', '')
-            if not name or len(name) == 0:
-                return False
-
-            # Check for obviously corrupted names (non-printable chars)
-            if not all(32 <= ord(c) < 127 or c in '\n\r\t' for c in name):
-                return False
-
-            return True
-        except Exception:
-            return False
+ELRS_SERIAL_NUMBER = 0x454C5253  # ASCII 'ELRS' big-endian
 
 
-class DeviceInfo:
-    """Container for ELRS device information."""
+def _read_cstr(data: bytes, offset: int) -> Tuple[str, int]:
+    """Read NUL-terminated string from data starting at offset.
 
-    def __init__(self, src: int):
-        """Initialize device info.
+    Returns (decoded_string, next_offset) where next_offset skips past the NUL.
+    If no NUL is found before the end of data, returns whatever was read and
+    next_offset = len(data). Uses errors='replace' so corrupt bytes don't crash.
 
-        Args:
-            src: Device source address
-        """
-        self.src = src
-        self.name = ""
-        self.serial = ""
-        self.hw_ver = ""
-        self.sw_ver = ""
-        self.n_params = 0
-        self.proto_ver = 0
-        self.fields = {}
-        self.fetched = set()
-        self.loaded = False
+    Mirrors CRSF.readString (scan.js:980-988).
+    """
+    end = offset
+    while end < len(data) and data[end] != 0:
+        end += 1
+    s = data[offset:end].decode('utf-8', errors='replace')
+    return s, end + 1  # +1 to skip the NUL (or len+1 if no NUL found, harmless)
 
-    def to_dict(self) -> dict:
-        """Convert to dictionary for backwards compatibility."""
-        return {
-            "name": self.name,
-            "serial": self.serial,
-            "hw_ver": self.hw_ver,
-            "sw_ver": self.sw_ver,
-            "n_params": self.n_params,
-            "proto_ver": self.proto_ver,
-            "fields": self.fields,
-            "fetched": self.fetched,
-            "loaded": self.loaded,
-        }
 
-    @staticmethod
-    def parse_device_info_payload(payload: bytes) -> tuple:
-        """Parse CRSF DEVICE_INFO payload.
+def parse_parameter(number: int, data: bytes) -> Optional[Dict[str, Any]]:
+    """Parse a fully-assembled parameter blob into a dict.
 
-        Args:
-            payload: Raw DEVICE_INFO payload bytes
+    Pure port of CrsfParams.parseParameter (scan.js:1287-1365).
+    Returns None if data is shorter than 3 bytes.
 
-        Returns:
-            Tuple of (dst, src, name, serial, hw_ver, sw_ver, n_params, proto_ver)
+    The returned dict keys match the web object so the UI port can be a
+    near-1:1 copy:
 
-        Raises:
-            ValueError: If payload is too short or invalid
-        """
-        if len(payload) < 4:
-            raise ValueError("Device info payload too short")
+        number        int    parameter ID
+        parentFolder  int    parent folder ID (0 = root)
+        type          int    PARAM_TYPE_* (after masking with 0x3F)
+        hidden        bool   (typeByte & 0x80) != 0
+        name          str
+        value         Any    type-dependent (see below)
+        options       list   only for TEXT_SELECTION; None otherwise
+        min           int    only for numeric/selection; None otherwise
+        max           int    only for numeric/selection; None otherwise
+        defaultValue  int    only for numeric/selection; None otherwise
+        unit          str    default ''
+        status        int    only for COMMAND; None otherwise
+        timeout       int    only for COMMAND; None otherwise
+    """
+    if len(data) < 3:
+        return None
 
-        dst = payload[0]
-        src = payload[1]
+    parent_folder = data[0]
+    type_byte     = data[1]
+    param_type    = type_byte & PARAM_TYPE_MASK
+    hidden        = bool(type_byte & PARAM_HIDDEN_BIT)
 
-        # Read name (null-terminated string)
-        idx = 2
-        name_bytes = []
-        while idx < len(payload) and payload[idx] != 0:
-            name_bytes.append(payload[idx])
-            idx += 1
-        name = bytes(name_bytes).decode(errors="ignore")
-        idx += 1  # skip null
-        offset_after_name = idx
+    offset = 2
+    name, offset = _read_cstr(data, offset)
 
-        # Read serial (4 bytes)
-        if offset_after_name + 4 <= len(payload):
-            serial = payload[offset_after_name:offset_after_name + 4]
-        else:
-            serial = b""
+    result: Dict[str, Any] = {
+        'number':       number,
+        'parentFolder': parent_folder,
+        'type':         param_type,
+        'hidden':       hidden,
+        'name':         name,
+        'value':        None,
+        'options':      None,
+        'min':          None,
+        'max':          None,
+        'defaultValue': None,
+        'unit':         '',
+        'status':       None,
+        'timeout':      None,
+    }
 
-        # Read hardware version (4 bytes)
-        if offset_after_name + 8 <= len(payload):
-            hw_ver = payload[offset_after_name + 4:offset_after_name + 8]
-        else:
-            hw_ver = b""
+    if param_type == PARAM_TYPE_UINT8:
+        if offset + 4 > len(data):
+            return result
+        result['value']        = data[offset]
+        result['min']          = data[offset + 1]
+        result['max']          = data[offset + 2]
+        result['defaultValue'] = data[offset + 3]
+        offset += 4
+        unit, offset = _read_cstr(data, offset)
+        result['unit'] = unit
 
-        # Read software version (3 bytes)
-        if offset_after_name + 11 <= len(payload):
-            sw_maj = payload[offset_after_name + 8]
-            sw_min = payload[offset_after_name + 9]
-            sw_rev = payload[offset_after_name + 10]
-        else:
-            sw_maj = sw_min = sw_rev = 0
+    elif param_type == PARAM_TYPE_INT8:
+        if offset + 4 > len(data):
+            return result
+        result['value']        = struct.unpack('b', bytes([data[offset]]))[0]
+        result['min']          = struct.unpack('b', bytes([data[offset + 1]]))[0]
+        result['max']          = struct.unpack('b', bytes([data[offset + 2]]))[0]
+        result['defaultValue'] = struct.unpack('b', bytes([data[offset + 3]]))[0]
+        offset += 4
+        unit, offset = _read_cstr(data, offset)
+        result['unit'] = unit
 
-        # Read n_params at offset+12
-        if offset_after_name + 12 < len(payload):
-            fields_count = payload[offset_after_name + 12]
-        else:
-            fields_count = 0
+    elif param_type == PARAM_TYPE_TEXT_SELECTION:
+        # Options is a NUL-terminated string of ';'-separated labels.
+        # Preserve all indices including empty slots — the UI skips empty ones
+        # at render time so that option indices remain stable.
+        opts_str, offset = _read_cstr(data, offset)
+        result['options'] = opts_str.split(';')
+        if offset + 4 > len(data):
+            return result
+        result['value']        = data[offset]
+        result['min']          = data[offset + 1]
+        result['max']          = data[offset + 2]
+        result['defaultValue'] = data[offset + 3]
+        offset += 4
+        unit, offset = _read_cstr(data, offset)
+        result['unit'] = unit
 
-        # Read protocol version at offset+13
-        if offset_after_name + 13 < len(payload):
-            proto_ver = payload[offset_after_name + 13]
-        else:
-            proto_ver = 0
+    elif param_type == PARAM_TYPE_FOLDER:
+        pass  # nothing more to read — folder has only name
 
-        return (
-            dst,
-            src,
-            name,
-            serial.hex(),
-            hw_ver.hex(),
-            f"{sw_maj}.{sw_min}.{sw_rev}",
-            fields_count,
-            proto_ver
-        )
+    elif param_type == PARAM_TYPE_INFO:
+        value, offset = _read_cstr(data, offset)
+        result['value'] = value
+
+    elif param_type == PARAM_TYPE_COMMAND:
+        if offset + 2 > len(data):
+            return result
+        result['status']  = data[offset]
+        result['timeout'] = data[offset + 1]
+        offset += 2
+        value, offset = _read_cstr(data, offset)
+        result['value'] = value
+
+    elif param_type == PARAM_TYPE_STRING:
+        value, offset = _read_cstr(data, offset)
+        result['value'] = value
+
+    # Unhandled types (UINT16, INT16, FLOAT): return dict with value=None.
+    # The UI renders "Unsupported type N" and blocks writes — matches web behaviour.
+
+    return result
+
+
+def parse_device_info(payload: bytes) -> Optional[Dict[str, Any]]:
+    """Parse a DEVICE_INFO payload with dest+origin already stripped.
+
+    Port of the DEVICE_INFO field walk in handleDeviceInfo (scan.js:1156-1191).
+    The caller strips payload[0:2] (dest, origin) before calling this function.
+
+    Layout after stripping:
+        [0..k]      name (NUL-terminated)
+        [k+1..k+4]  serialNumber  (uint32 big-endian)
+        [k+5..k+8]  hardwareId    (uint32 big-endian)
+        [k+9..k+12] firmwareId    (uint32 big-endian)
+        [k+13]      parametersTotal  (uint8)
+        [k+14]      parameterVersion (uint8)
+
+    Returns None on too-short payload.
+    """
+    if len(payload) < 3:
+        return None
+
+    name, offset = _read_cstr(payload, 0)
+
+    # Need 4+4+4+1+1 = 14 bytes after the name
+    if offset + 14 > len(payload):
+        return None
+
+    serial_number = struct.unpack('>I', payload[offset:offset + 4])[0]; offset += 4
+    hardware_id   = struct.unpack('>I', payload[offset:offset + 4])[0]; offset += 4
+    firmware_id   = struct.unpack('>I', payload[offset:offset + 4])[0]; offset += 4
+    parameters_total  = payload[offset]
+    parameter_version = payload[offset + 1]
+
+    return {
+        'name':             name,
+        'serialNumber':     serial_number,
+        'hardwareId':       hardware_id,
+        'firmwareId':       firmware_id,
+        'parametersTotal':  parameters_total,
+        'parameterVersion': parameter_version,
+        'isElrs':           serial_number == ELRS_SERIAL_NUMBER,
+    }

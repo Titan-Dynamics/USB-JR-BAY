@@ -14,44 +14,44 @@ import shutil
 from datetime import datetime
 from PyQt5 import QtWidgets, QtCore
 from PyQt5.QtGui import QIcon, QPalette, QColor, QPixmap, QPainter, QPolygon, QPen, QBrush
-from PyQt5.QtCore import QPoint, Qt
+from PyQt5.QtCore import QPoint, Qt, QSettings
 
 # Import from refactored modules
-from crsf_protocol import *
-from device_parameters import DeviceParameterParser, DeviceInfo
-from serial_interface import SerialThread
+from serial_interface import SerialInterface, get_available_ports
 from joystick_handler import JoystickHandler
 from channel_ui import ChannelRow, SRC_CHOICES
-from config_manager import ConfigManager, get_available_ports, DEFAULT_BAUD, CHANNELS, DEFAULT_CFG
+from config_manager import ConfigManager, DEFAULT_BAUD, CHANNELS, DEFAULT_CFG
 from version import VERSION, GIT_SHA
+from crsf_state_machine import CRSFStateMachine
+from crsf_protocol import rf_mode_name, tx_power_name, CRSF_ADDRESS_MODULE
+from lua_state_machine import LuaStateMachine
+from device_parameters import (
+    PARAM_TYPE_UINT8, PARAM_TYPE_INT8, PARAM_TYPE_TEXT_SELECTION,
+    PARAM_TYPE_STRING, PARAM_TYPE_FOLDER, PARAM_TYPE_INFO, PARAM_TYPE_COMMAND,
+)
 
-# Map known field names to units for numeric display in the UI
-UNIT_MAP = {
-    'max power': 'mW',
-    'fan thresh': 'mW',
-}
-
-# Units for telemetry link stats displayed in the UI
-TELEMETRY_UNIT_MAP = {
-    '1RSS': 'dBm',
-    '2RSS': 'dBm',
-    'TRSS': 'dBm',
-    'LQ': '%',
-    'TLQ': '%',
-    'RSNR': 'dB',
-    'TSNR': 'dB',
-    'TPWR': 'mW',
-}
-
-SEND_HZ = 60
-
-def tpwr_to_mw(crsfpower):
-    return {1: "10", 2: "25", 3: "100", 4: "500", 5: "1000",
-            6: "2000", 7: "250", 8: "50"}.get(crsfpower, "Unknown")
+GUI_UPDATE_INTERVAL_S = 1.0 / 60  # ~60 Hz redraws
+CSV_LOG_INTERVAL_S    = 0.1       # 10 Hz CSV logging
 
 
 class NoWheelComboBox(QtWidgets.QComboBox):
     """QComboBox that ignores mouse wheel events."""
+
+    def wheelEvent(self, event):
+        """Ignore wheel events to prevent accidental value changes."""
+        event.ignore()
+
+
+class NoWheelSpinBox(QtWidgets.QSpinBox):
+    """QSpinBox that ignores mouse wheel events."""
+
+    def wheelEvent(self, event):
+        """Ignore wheel events to prevent accidental value changes."""
+        event.ignore()
+
+
+class NoWheelDoubleSpinBox(QtWidgets.QDoubleSpinBox):
+    """QDoubleSpinBox that ignores mouse wheel events."""
 
     def wheelEvent(self, event):
         """Ignore wheel events to prevent accidental value changes."""
@@ -90,19 +90,17 @@ class JoystickVisualizer(QtWidgets.QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
 
-        # Get widget dimensions
         width = self.width()
         height = self.height()
-        size = min(width, height) - 35  # Space for labels (left + bottom)
-        offset_x = (width - size) // 2 + 8  # Small offset for left label
-        offset_y = 5  # Top margin, leaving room for bottom label
+        size = min(width, height) - 35
+        offset_x = (width - size) // 2 + 8
+        offset_y = (height - size) // 2
 
-        # Draw outer square (dead zone indicator)
+        # Dead zone indicator
         painter.setPen(QPen(QColor("#555555"), 2))
         painter.setBrush(QBrush(QColor("#2b2b2b")))
         painter.drawRoundedRect(offset_x, offset_y, size, size, 8, 8)
 
-        # Draw center crosshair
         painter.setPen(QPen(QColor("#666666"), 1))
         center_x = offset_x + size // 2
         center_y = offset_y + size // 2
@@ -110,9 +108,7 @@ class JoystickVisualizer(QtWidgets.QWidget):
         painter.drawLine(center_x - crosshair_extent, center_y, center_x + crosshair_extent, center_y)
         painter.drawLine(center_x, center_y - crosshair_extent, center_x, center_y + crosshair_extent)
 
-        # Draw stick position indicator if at least one channel is mapped
         if self.h_mapped or self.v_mapped:
-            # Calculate stick position (1000-2000 maps to 0-size)
             # Invert vertical axis (lower value = higher on screen)
             center_stick_x = offset_x + size // 2
             center_stick_y = offset_y + size // 2
@@ -121,25 +117,19 @@ class JoystickVisualizer(QtWidgets.QWidget):
             stick_x = offset_x + int((self.h_value - 1000) / 1000.0 * size) if self.h_mapped else center_stick_x
             stick_y = offset_y + int((2000 - self.v_value) / 1000.0 * size) if self.v_mapped else center_stick_y
 
-            # Clamp to bounds
             stick_x = max(offset_x, min(offset_x + size, stick_x))
             stick_y = max(offset_y, min(offset_y + size, stick_y))
 
-            # Draw circle for any mapped channel(s)
             painter.setPen(QPen(QColor("#1e88e5"), 2))
             painter.setBrush(QBrush(QColor("#1e88e5")))
             painter.drawEllipse(stick_x - 8, stick_y - 8, 16, 16)
 
-        # Draw channel labels
         painter.setPen(QPen(QColor("#e0e0e0")))
         font = painter.font()
         font.setPointSize(8)
         painter.setFont(font)
 
-        # Left label (vertical channel)
         painter.drawText(0, offset_y, offset_x - 5, size, Qt.AlignRight | Qt.AlignVCenter, f"{self.v_channel}")
-
-        # Bottom label (horizontal channel)
         painter.drawText(offset_x, offset_y + size + 5, size, 20, Qt.AlignHCenter | Qt.AlignTop, f"{self.h_channel}")
 
 
@@ -155,14 +145,23 @@ class Main(QtWidgets.QWidget):
 
         # Set dark title bar on Windows 10/11
         self._set_dark_title_bar()
+
+        # App-wide settings (separate from calibration data)
+        self.settings = QSettings("USBJRBay", "USB_JR_Bay")
+
         self.cfg = DEFAULT_CFG.copy()
         self._load_cfg()
+
+        # Throttle timestamps for the split-tick design
+        self._last_gui_update = 0.0
 
         # CSV logging setup
         self.csv_filename = None
         self.csv_buffer = []  # Buffer for CSV rows (max 600 lines)
         self.csv_last_write_time = 0.0  # Track last write time for 10Hz throttling
         self.csv_start_time = None  # Track when logging started for filename
+        self.last_log_time = 0.0  # Track last log time for throttling CSV log calls
+        self.csv_latest_telemetry = {}  # Store latest telemetry data for CSV logging
         # Fieldnames: timestamp, channels 1-16, then link stats
         self.csv_fieldnames = ['timestamp'] + [f'CH{i+1}' for i in range(CHANNELS)] + ['1RSS', '2RSS', 'LQ', 'RSNR', 'RFMD', 'TPWR', 'TRSS', 'TLQ', 'TSNR']
 
@@ -173,28 +172,42 @@ class Main(QtWidgets.QWidget):
         self.mapping_baseline = ([], [])
         self.mapping_started_at = 0.0
 
-        # Serial thread
-        self.serThread = SerialThread(self.cfg["serial_port"], DEFAULT_BAUD)
-        self.thread = threading.Thread(target=self.serThread.run, daemon=True)
-        self.thread.start()
-        self.serThread.telemetry.connect(self.onTel)
-        self.serThread.debug.connect(self.onDebug)
-        # Device discovery events
-        self.serThread.device_discovered.connect(self._on_device_discovered)
-        self.serThread.device_parameters_loaded.connect(self._on_device_parameters_loaded)
-        self.serThread.device_parameters_progress.connect(self._on_device_parameters_progress)
-        self.serThread.device_parameter_field_updated.connect(self._on_device_parameter_field_updated)
-        self.serThread.connection_status.connect(self.onConnectionStatus)
-        self.serThread.channels_update.connect(self.onChannels)
-        self.serThread.sync_update.connect(self.onSync)
+        # Latest joystick data for mapping mode
+        self.latest_axes = []
+        self.latest_buttons = []
 
-        # Module status (will be updated in window title)
-        self._module_status = "No module detected"
-
-        # Joystick (auto-scanning) - using JoystickHandler instead of Joy
+        # Joystick (auto-scanning) - called from main tick() at 500Hz
         self.joy = JoystickHandler()
+        # Connect joystick status
         self.joy.status.connect(self.onDebug)
         self.joy.status.connect(self.onJoyStatus)
+
+        # Serial interface - manages port connection
+        self.serThread = SerialInterface(self.cfg["serial_port"], DEFAULT_BAUD)
+        self.thread = threading.Thread(target=self.serThread.run, daemon=True)
+        self.thread.start()
+        self.serThread.debug.connect(self.onDebug)
+        self.serThread.connection_status.connect(self.onConnectionStatus)
+
+        # CRSF state machine - handles frame transmission and reception
+        self.crsf_state_machine = CRSFStateMachine()
+        self.crsf_state_machine.set_serial(self.serThread)
+        self.crsf_state_machine.set_link_stats_callback(self.onLinkStats)
+
+        # LUA state machine - ELRS parameter discovery and editing
+        self.lua = LuaStateMachine(send=self.crsf_state_machine.queue_frame)
+        self.lua.on_devices_changed  = self._lua_on_devices
+        self.lua.on_loading_progress = self._lua_on_progress
+        self.lua.on_loading_complete = self._lua_on_complete
+        self.lua.on_loading_aborted  = self._lua_on_aborted
+        self.lua.on_field_updated    = self._lua_on_field
+        self.lua.on_debug            = self.onDebug
+        self.lua.on_elrs_error       = self._lua_on_elrs_error
+        self.lua.on_elrs_confirm     = self._lua_on_elrs_confirm
+        self.lua.on_elrs_status      = self._lua_on_elrs_status_update
+        self._lua_confirm_param_num  = None
+        self.crsf_state_machine.set_lua_callback(self.lua.handle_frame)
+        self.crsf_state_machine.set_lua_tick_callback(self.lua.tick)
 
         # Main content: channels on left, visualizers on right
         content_layout = QtWidgets.QHBoxLayout()
@@ -202,8 +215,8 @@ class Main(QtWidgets.QWidget):
         # Left side: All 16 channels in single column (scrollable)
         self.rows = []
         channels_layout = QtWidgets.QVBoxLayout()
-        channels_layout.setContentsMargins(0, 5, 5, 5)  # Reduce left padding
-        channels_layout.setSpacing(5)  # Space between bordered rows
+        channels_layout.setContentsMargins(0, 0, 8, 0)
+        channels_layout.setSpacing(4)
         for i in range(CHANNELS):
             row = ChannelRow(i, self.cfg["channels"][i] if i < len(self.cfg["channels"]) else DEFAULT_CFG["channels"][0])
             row.changed.connect(self.save_cfg)
@@ -219,7 +232,7 @@ class Main(QtWidgets.QWidget):
             # Wrap each row in a QGroupBox with channel label as title (like link stats)
             channel_box = QtWidgets.QGroupBox(f"CH{i+1}")
             box_layout = QtWidgets.QVBoxLayout(channel_box)
-            box_layout.setContentsMargins(5, 5, 10, 5)  # Extra right padding for scrollbar
+            box_layout.setContentsMargins(4, 0, 4, 4)
             box_layout.addWidget(row)
 
             self.rows.append(row)
@@ -234,25 +247,33 @@ class Main(QtWidgets.QWidget):
         ch_scroll.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         content_layout.addWidget(ch_scroll, 2)  # Give channels more space
 
-        # Right side: Joystick visualizers and channel indicators
         right_panel = QtWidgets.QVBoxLayout()
-        right_panel.setContentsMargins(5, 0, 5, 0)  # Reduce vertical padding (left, top, right, bottom)
-        right_panel.setSpacing(2)  # Reduce spacing between visualizers and bars
+        right_panel.setContentsMargins(4, 0, 4, 0)
+        right_panel.setSpacing(2)
 
-        # Joystick visualizers (hidden when "Channels" mode)
+        WIDGET_HEIGHT = 26
+        display_row = QtWidgets.QHBoxLayout()
+        display_row.setContentsMargins(0, 0, 0, 4)
+        self.display_mode = NoWheelComboBox()
+        self.display_mode.setFixedHeight(WIDGET_HEIGHT)
+        self.display_mode.addItems(["Channels", "Mode 1 Sticks + Channels", "Mode 2 Sticks + Channels"])
+        self.display_mode.currentTextChanged.connect(self._on_display_mode_changed)
+        display_row.addWidget(self.display_mode, 1)
+        right_panel.addLayout(display_row)
+
         self.viz_layout = QtWidgets.QHBoxLayout()
-        self.viz_layout.setSpacing(5)  # Reduce spacing between visualizers
-        self.viz_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
+        self.viz_layout.setSpacing(4)
+        self.viz_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Mode 1 visualizers: Left stick = Rudder/Elevator, Right stick = Aileron/Throttle
-        self.viz1_mode1 = JoystickVisualizer(h_channel=4, v_channel=2)  # CH4 horiz, CH2 vert
-        self.viz2_mode1 = JoystickVisualizer(h_channel=1, v_channel=3)  # CH1 horiz, CH3 vert
+        # Mode 1: Left stick = Rudder/Elevator, Right stick = Aileron/Throttle
+        self.viz1_mode1 = JoystickVisualizer(h_channel=4, v_channel=2)
+        self.viz2_mode1 = JoystickVisualizer(h_channel=1, v_channel=3)
 
-        # Mode 2 visualizers: Left stick = Rudder/Throttle, Right stick = Aileron/Elevator
-        self.viz1_mode2 = JoystickVisualizer(h_channel=4, v_channel=3)  # CH4 horiz, CH3 vert
-        self.viz2_mode2 = JoystickVisualizer(h_channel=1, v_channel=2)  # CH1 horiz, CH2 vert
+        # Mode 2: Left stick = Rudder/Throttle, Right stick = Aileron/Elevator
+        self.viz1_mode2 = JoystickVisualizer(h_channel=4, v_channel=3)
+        self.viz2_mode2 = JoystickVisualizer(h_channel=1, v_channel=2)
 
-        # Initialize to Mode 2 by default (will be adjusted when config is loaded)
+        # Default to Mode 2 (adjusted when config loads)
         self.viz1 = self.viz1_mode2
         self.viz2 = self.viz2_mode2
         self.current_mode = "Mode 2"
@@ -262,21 +283,20 @@ class Main(QtWidgets.QWidget):
         self.viz_widget = QtWidgets.QWidget()
         self.viz_widget.setLayout(self.viz_layout)
         right_panel.addWidget(self.viz_widget)
-        # Hide visualizers by default (will be shown if needed when display mode is applied)
         self.viz_widget.setVisible(False)
 
-        # Progress bars for channels 5-16 (or 1-16 in Channels mode)
+        # Channel bars (5-16, or 1-16 in Channels mode)
         bars_widget = QtWidgets.QWidget()
         bars_layout = QtWidgets.QVBoxLayout(bars_widget)
-        bars_layout.setSpacing(1)
+        bars_layout.setSpacing(2)
         bars_layout.setContentsMargins(0, 0, 0, 0)
         self.channel_bars = []
-        self.all_channel_bars = []  # Store all bars including 1-4
-        self.bar_widgets = []  # Store widget containers for visibility toggling
+        self.all_channel_bars = []
+        self.bar_widgets = []
         for i in range(CHANNELS):
-            bar_container = QtWidgets.QWidget()  # Container for each bar
+            bar_container = QtWidgets.QWidget()
             bar_layout = QtWidgets.QHBoxLayout(bar_container)
-            bar_layout.setSpacing(3)  # Reduce gap between label and bar
+            bar_layout.setSpacing(4)
             bar_layout.setContentsMargins(0, 0, 0, 0)
             label = QtWidgets.QLabel(f"{i+1}")
             label.setMinimumWidth(20)
@@ -290,53 +310,65 @@ class Main(QtWidgets.QWidget):
             bars_layout.addWidget(bar_container)
             self.all_channel_bars.append(bar)
             self.bar_widgets.append(bar_container)
-            # Only add to displayed bars if channel is 5-16
             if i >= 4:
                 self.channel_bars.append(bar)
             else:
-                # Hide channels 1-4 by default
                 bar_container.setVisible(False)
 
         bars_scroll = QtWidgets.QScrollArea()
         bars_scroll.setWidgetResizable(True)
         bars_scroll.setWidget(bars_widget)
         bars_scroll.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
-        self.bars_scroll = bars_scroll  # Store reference for toggling visibility
+        self.bars_scroll = bars_scroll
         right_panel.addWidget(bars_scroll)
 
         right_container = QtWidgets.QWidget()
         right_container.setLayout(right_panel)
-        right_container.setMaximumWidth(450)
+        right_container.setMaximumWidth(350)
         content_layout.addWidget(right_container, 1)
+
+        saved_mode = self.cfg.get("display_mode", "Channels")
+        # Case-insensitive search for matching display mode
+        index = -1
+        for i in range(self.display_mode.count()):
+            if self.display_mode.itemText(i).lower() == saved_mode.lower():
+                index = i
+                break
+        if index >= 0:
+            self.display_mode.setCurrentIndex(index)
+            if index == 0:
+                self._on_display_mode_changed(self.display_mode.itemText(index))
+        else:
+            self._on_display_mode_changed("Channels")
 
         # Telemetry
         tel = QtWidgets.QHBoxLayout()
         self.telLabels = {}
-        for key in ["1RSS","2RSS","RSNR","TRSS","TSNR","LQ","TLQ","RFMD","TPWR"]:
+        for key in ["LQ","TLQ","1RSS","2RSS","TRSS","RSNR","TSNR","RFMD","TPWR"]:
             box = QtWidgets.QGroupBox(key)
             lab = QtWidgets.QLabel("--")
             lab.setAlignment(QtCore.Qt.AlignCenter | QtCore.Qt.AlignVCenter)
-            f = lab.font(); f.setPointSize(14); lab.setFont(f)
+            f = lab.font(); f.setPointSize(11); lab.setFont(f)
             v = QtWidgets.QVBoxLayout(box)
             v.setContentsMargins(0, 0, 0, 10)
             v.addWidget(lab, alignment=QtCore.Qt.AlignCenter)
             tel.addWidget(box)
             self.telLabels[key] = lab
 
-        # Initially set link stats labels to grey
+        # Initially set link stats labels to grey (no data)
         for lab in self.telLabels.values():
             lab.setStyleSheet("color: #888888;")
 
         # Collapsible log section
-        self.log_container = QtWidgets.QWidget()
-        log_layout = QtWidgets.QVBoxLayout(self.log_container)
-        log_layout.setContentsMargins(0, 4, 0, 0)  # 4px top margin for gap from link stats
-        log_layout.setSpacing(0)
+        self.console_container = QtWidgets.QWidget()
+        console_layout = QtWidgets.QVBoxLayout(self.console_container)
+        console_layout.setContentsMargins(0, 4, 0, 0)  # 4px top margin for gap from link stats
+        console_layout.setSpacing(0)
 
         # Console header (clickable to toggle)
-        self.log_header = QtWidgets.QPushButton("Console ▼")
-        self.log_header.setFlat(True)
-        self.log_header.setStyleSheet("""
+        self.console_header = QtWidgets.QPushButton("Console ▼")
+        self.console_header.setFlat(True)
+        self.console_header.setStyleSheet("""
             QPushButton {
                 text-align: left;
                 padding: 5px;
@@ -349,22 +381,22 @@ class Main(QtWidgets.QWidget):
                 background-color: #4a4a4a;
             }
         """)
-        self.log_header.setCursor(QtCore.Qt.PointingHandCursor)
-        self.log_header.clicked.connect(self._toggle_log)
-        log_layout.addWidget(self.log_header)
+        self.console_header.setCursor(QtCore.Qt.PointingHandCursor)
+        self.console_header.clicked.connect(self._toggle_console)
+        console_layout.addWidget(self.console_header)
 
         # Log (fixed height)
-        self.log = QtWidgets.QPlainTextEdit()
-        self.log.setReadOnly(True)
-        self.log.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self.log.setFixedHeight(140)
+        self.console = QtWidgets.QPlainTextEdit()
+        self.console.setReadOnly(True)
+        self.console.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self.console.setFixedHeight(140)
 
-        # Restore console state from config
-        self.log_expanded = self.cfg.get("console_expanded", True)
-        self.log.setVisible(self.log_expanded)
-        self.log_header.setText("Console ▼" if self.log_expanded else "Console ▶")
+        # Restore console state from app settings
+        self.console_expanded = self.settings.value("console_expanded", True, type=bool)
+        self.console.setVisible(self.console_expanded)
+        self.console_header.setText("Console ▼" if self.console_expanded else "Console ▶")
 
-        log_layout.addWidget(self.log)
+        console_layout.addWidget(self.console)
 
         # Tabs for Channels and Configuration
         self.tabs = QtWidgets.QTabWidget()
@@ -373,187 +405,141 @@ class Main(QtWidgets.QWidget):
         channels_tab = QtWidgets.QWidget()
         channels_tab_layout = QtWidgets.QVBoxLayout(channels_tab)
 
-        # Status bar at top of Configuration tab
-        port_widget = QtWidgets.QWidget()
-        port_layout = QtWidgets.QHBoxLayout(port_widget)
-        port_layout.setContentsMargins(0, 5, 0, 5)
+        WIDGET_HEIGHT = 26
 
-        # Controller status at far left
         self.joyStatusLabel = QtWidgets.QLabel("Scanning for controller...")
         self.joyStatusLabel.setStyleSheet("color: red; font-weight: bold;")
-        port_layout.addWidget(self.joyStatusLabel)
 
-        # Divider between controller status and COM controls
-        joy_divider = QtWidgets.QFrame()
-        joy_divider.setFrameShape(QtWidgets.QFrame.VLine)
-        joy_divider.setFrameShadow(QtWidgets.QFrame.Sunken)
-        joy_divider.setLineWidth(2)
-        port_layout.addWidget(joy_divider)
-
-        # Serial COM controls
-        port_layout.addWidget(QtWidgets.QLabel("ESP32 COM Port:"))
-
-        WIDGET_HEIGHT = 26  # Match channel row widget height
         self.portCombo = NoWheelComboBox()
-        self.portCombo.setMinimumWidth(80)
+        self.portCombo.setMinimumWidth(180)
         self.portCombo.setFixedHeight(WIDGET_HEIGHT)
         self._refresh_port_list()
-        # Set current port by finding it in the stored data
         saved_port = self.cfg["serial_port"]
         for i in range(self.portCombo.count()):
             if self.portCombo.itemData(i) == saved_port:
                 self.portCombo.setCurrentIndex(i)
                 break
         self.portCombo.currentTextChanged.connect(self._on_port_changed)
-        port_layout.addWidget(self.portCombo)
 
-        refresh_btn = QtWidgets.QPushButton("Refresh")
-        refresh_btn.clicked.connect(self._refresh_port_list)
-        refresh_btn.setMaximumWidth(80)
-        refresh_btn.setFixedHeight(WIDGET_HEIGHT)
-        port_layout.addWidget(refresh_btn)
+        # If the saved port wasn't found (stale config), sync the serial thread
+        # to whatever port the combo defaulted to.
+        current_port = self.portCombo.currentData()
+        if current_port and current_port != self.cfg["serial_port"]:
+            # Defer until after the GUI is fully constructed so that
+            # jrBayStatusLabel exists when onConnectionStatus fires.
+            _port_text = self.portCombo.currentText()
+            QtCore.QTimer.singleShot(0, lambda: self._on_port_changed(_port_text))
 
-        # JR Bay status right after the port controls
-        self.jrBayStatusLabel = QtWidgets.QLabel("Disconnected")
-        self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
-        port_layout.addWidget(self.jrBayStatusLabel)
+        self.refreshPortBtn = QtWidgets.QPushButton("Refresh")
+        self.refreshPortBtn.clicked.connect(self._refresh_port_list)
+        self.refreshPortBtn.setMaximumWidth(80)
+        self.refreshPortBtn.setFixedHeight(WIDGET_HEIGHT)
 
-        # Divider between JR Bay status and logging
-        logging_divider = QtWidgets.QFrame()
-        logging_divider.setFrameShape(QtWidgets.QFrame.VLine)
-        logging_divider.setFrameShadow(QtWidgets.QFrame.Sunken)
-        logging_divider.setLineWidth(2)
-        port_layout.addWidget(logging_divider)
-
-        # Logging checkbox
-        self.logging_enabled = QtWidgets.QCheckBox("Logging enabled")
+        self.logging_enabled = QtWidgets.QCheckBox("Logging")
         self.logging_enabled.setFixedHeight(WIDGET_HEIGHT)
         self.logging_enabled.toggled.connect(self._on_logging_toggled)
-        port_layout.addWidget(self.logging_enabled)
-        self.logging_enabled.setChecked(self.cfg.get("logging_enabled", False))
+        self.logging_enabled.setChecked(self.settings.value("logging_enabled", False, type=bool))
 
-        # Divider between logging and display mode
-        display_divider = QtWidgets.QFrame()
-        display_divider.setFrameShape(QtWidgets.QFrame.VLine)
-        display_divider.setFrameShadow(QtWidgets.QFrame.Sunken)
-        display_divider.setLineWidth(2)
-        port_layout.addWidget(display_divider)
-
-        # Display mode dropdown
-        port_layout.addWidget(QtWidgets.QLabel("Display:"))
-        self.display_mode = NoWheelComboBox()
-        self.display_mode.setFixedHeight(WIDGET_HEIGHT)
-        self.display_mode.addItems(["Channels", "Mode 1 sticks + channels", "Mode 2 sticks + channels"])
-        self.display_mode.currentTextChanged.connect(self._on_display_mode_changed)
-        port_layout.addWidget(self.display_mode)
-
-        # Set from config (default is "Channels") and apply initial display mode
-        saved_mode = self.cfg.get("display_mode", "Channels")
-        index = self.display_mode.findText(saved_mode)
-        if index >= 0:
-            self.display_mode.setCurrentIndex(index)
-            # Ensure the handler is called even if index is 0 (since currentTextChanged might not fire)
-            if index == 0:
-                self._on_display_mode_changed(saved_mode)
-        else:
-            # If saved mode not found, explicitly apply default
-            self._on_display_mode_changed("Channels")
-
-        port_layout.addStretch()
-
-        port_widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        channels_tab_layout.addWidget(port_widget)
-
-        # Horizontal divider under the port widget
-        h_divider = QtWidgets.QFrame()
-        h_divider.setFrameShape(QtWidgets.QFrame.HLine)
-        h_divider.setFrameShadow(QtWidgets.QFrame.Sunken)
-        h_divider.setLineWidth(2)
-        channels_tab_layout.addWidget(h_divider)
+        self.jrBayStatusLabel = QtWidgets.QLabel("Disconnected")
+        self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
 
         channels_tab_layout.addLayout(content_layout)
-        self.tabs.addTab(channels_tab, "Configuration")
+        self.tabs.addTab(channels_tab, "Controller")
 
-        # Configuration tab
-        config_tab = QtWidgets.QWidget()
-        config_layout = QtWidgets.QVBoxLayout(config_tab)
-        # Leave blank for now
-        self.tabs.addTab(config_tab, self._module_status)  # Set initial tab title to module status
-        config_tab.setMinimumSize(400, 300)
-        # Loading indicator for config tab (indeterminate progress)
-        self.config_loading = QtWidgets.QProgressBar()
-        self.config_loading.setRange(0, 0)  # indeterminate
-        self.config_loading.setMaximumHeight(12)
-        self.config_loading.setVisible(False)
-        # Add it to the config layout as the first widget (hidden by default)
-        config_layout.addWidget(self.config_loading)
-        # Mapping of field id -> widget used for updating without a full re-populate
-        self._config_field_widgets = {}
-        # Pending writes: fid -> (desired_value, timestamp)
-        self._pending_param_writes = {}
+        # Parameters tab
+        params_tab = self._create_config_tab()
+        self.tabs.addTab(params_tab, "Parameters")
 
-        # Set Channels as default and disable Configuration tab until module detected
+        self._params_tab_first_visit = True
+        self._selected_card = None
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
         self.tabs.setCurrentIndex(0)
-        self.tabs.setTabEnabled(1, False)  # Disable Configuration tab initially
+        top_bar = QtWidgets.QHBoxLayout()
+        top_bar.setContentsMargins(0, 4, 0, 4)
+        top_bar.addWidget(self.joyStatusLabel)
+
+        divider1 = QtWidgets.QFrame()
+        divider1.setFrameShape(QtWidgets.QFrame.VLine)
+        divider1.setFrameShadow(QtWidgets.QFrame.Sunken)
+        divider1.setLineWidth(2)
+        top_bar.addWidget(divider1)
+
+        top_bar.addWidget(QtWidgets.QLabel("ESP32 COM Port:"))
+        top_bar.addWidget(self.portCombo)
+        top_bar.addWidget(self.refreshPortBtn)
+
+        divider2 = QtWidgets.QFrame()
+        divider2.setFrameShape(QtWidgets.QFrame.VLine)
+        divider2.setFrameShadow(QtWidgets.QFrame.Sunken)
+        divider2.setLineWidth(2)
+        top_bar.addWidget(divider2)
+
+        top_bar.addWidget(self.jrBayStatusLabel)
+
+        top_bar.addStretch()
+        top_bar.addSpacing(32)
+        top_bar.addWidget(self.logging_enabled)
+
+        layout.addLayout(top_bar)
+
+        h_divider_top = QtWidgets.QFrame()
+        h_divider_top.setFrameShape(QtWidgets.QFrame.HLine)
+        h_divider_top.setFrameShadow(QtWidgets.QFrame.Sunken)
+        h_divider_top.setLineWidth(2)
+        layout.addWidget(h_divider_top)
 
         layout.addWidget(self.tabs)
 
-        # Telemetry (link stats) below the tabs
+        # LUA notification banner — used for both errors and command confirmations
+        self._lua_error_banner = QtWidgets.QFrame()
+        _banner_layout = QtWidgets.QHBoxLayout(self._lua_error_banner)
+        _banner_layout.setContentsMargins(10, 5, 10, 5)
+        self._lua_error_label = QtWidgets.QLabel()
+        self._lua_error_label.setStyleSheet(
+            "color: #ffffff; font-weight: bold; border: none; background: transparent;"
+        )
+        self._lua_error_label.setWordWrap(True)
+        _banner_btn_style = (
+            "QPushButton { background-color: #ffffff; color: #000000; border: none;"
+            " border-radius: 3px; padding: 2px 8px; font-weight: bold; }"
+            " QPushButton:hover { background-color: #e0e0e0; }"
+            " QPushButton:pressed { background-color: #bdbdbd; }"
+        )
+        self._lua_cancel_btn = QtWidgets.QPushButton("Cancel")
+        self._lua_cancel_btn.setFixedWidth(68)
+        self._lua_cancel_btn.setStyleSheet(_banner_btn_style)
+        self._lua_cancel_btn.clicked.connect(self._lua_confirm_cancel)
+        self._lua_ok_btn = QtWidgets.QPushButton("OK")
+        self._lua_ok_btn.setFixedWidth(60)
+        self._lua_ok_btn.setStyleSheet(_banner_btn_style)
+        self._lua_ok_btn.clicked.connect(self._lua_banner_ok)
+        _banner_layout.addWidget(self._lua_error_label, 1)
+        _banner_layout.addWidget(self._lua_cancel_btn)
+        _banner_layout.addWidget(self._lua_ok_btn)
+        self._lua_error_banner.setVisible(False)
+        self._lua_set_banner_mode('error')  # sets stylesheet + Cancel visibility
+        layout.addWidget(self._lua_error_banner)
+
         layout.addLayout(tel)
+        layout.addWidget(self.console_container)
+        layout.setStretch(2, 1)
 
-        # Collapsible log below telemetry
-        layout.addWidget(self.log_container)
+        # Pass channel rows and toggle group enforcer to JoystickHandler
+        self.joy.set_channel_rows(self.rows)
+        self.joy.set_toggle_group_enforcer(self._enforce_toggle_groups)
 
-        # Timer loop
-        # Only the tabs area should expand/contract on resize
-        layout.setStretch(0, 1)  # Index 0 is the tabs widget
-
+        # Drive tick as fast as the Qt event queue allows; expensive work is
+        # throttled inside tick() itself via monotonic-time gates.
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
-        self.timer.start(int(1000 / SEND_HZ))
+        self.timer.start(0)
 
         # Schedule initial connection attempt after GUI is shown
         def attempt_initial_connection():
             self.serThread._connect()
             self.serThread._initial_connect_attempted = True
         QtCore.QTimer.singleShot(500, attempt_initial_connection)
-
-        # TX heartbeat tracking
-        self._last_tx_heartbeat = 0.0
-        self._tx_connected = False
-        # manage cooldowns for resets to avoid repeated resets in tight loops
-        self._last_tx_reset_time = 0.0
-
-    def _update_module_status(self):
-        """Update module status in tab title"""
-        self.tabs.setTabText(1, self._module_status)
-
-    def onTel(self, d):
-        for k, v in d.items():
-            if k in self.telLabels:
-                try:
-                    # Special handling for TPWR - convert to mW value
-                    if k == 'TPWR' and v is not None:
-                        mw_value = tpwr_to_mw(v)
-                        unit = TELEMETRY_UNIT_MAP.get(k)
-                        if unit:
-                            text = f"{mw_value} {unit}"
-                        else:
-                            text = mw_value
-                    else:
-                        unit = TELEMETRY_UNIT_MAP.get(k)
-                        if unit and v is not None:
-                            # display numeric values with units
-                            if isinstance(v, float):
-                                text = f"{v:.1f} {unit}"
-                            else:
-                                text = f"{v} {unit}"
-                        else:
-                            text = str(v)
-                except Exception:
-                    text = str(v)
-                self.telLabels[k].setText(text)
-
 
     def onConnectionStatus(self, is_connected):
         """Update status indicator based on actual connection state"""
@@ -562,6 +548,17 @@ class Main(QtWidgets.QWidget):
             try:
                 self.jrBayStatusLabel.setText("Connected")
                 self.jrBayStatusLabel.setStyleSheet("color: white; font-weight: bold;")
+                # Update port combo to show the connected port
+                connected_port = self.serThread.port
+                if connected_port:
+                    # Refresh the port list to include the newly connected port
+                    current_text = self.portCombo.currentText()
+                    self._refresh_port_list()
+                    # Select the connected port in the combo box
+                    for i in range(self.portCombo.count()):
+                        if self.portCombo.itemData(i) == connected_port:
+                            self.portCombo.setCurrentIndex(i)
+                            break
             except Exception:
                 pass
         else:
@@ -569,20 +566,14 @@ class Main(QtWidgets.QWidget):
             try:
                 self.jrBayStatusLabel.setText("Disconnected")
                 self.jrBayStatusLabel.setStyleSheet("color: red; font-weight: bold;")
-            except Exception:
-                pass
-            # When the serial port disconnects the TX is implicitly unreachable
-            try:
-                self._module_status = "No module detected"
-                self._update_module_status()
-                # Disable Configuration tab when module disconnects
-                self.tabs.setTabEnabled(1, False)
+                self.lua.reset()
+                self._lua_on_devices([])
             except Exception:
                 pass
 
     def onDebug(self, s):
         try:
-            self.log.appendPlainText(s)
+            self.console.appendPlainText(s)
         except Exception:
             pass
 
@@ -600,99 +591,68 @@ class Main(QtWidgets.QWidget):
         except Exception:
             pass
 
-    def onChannels(self, chans):
-        """Update GUI channel displays when CRSF RC_CHANNELS frames arrive."""
-        try:
-            for i, v in enumerate(chans):
-                if i < len(self.rows):
-                    self.rows[i].bar.setValue(v)
-                    self.rows[i].val.setText(str(v))
-        except Exception as e:
-            self.onDebug(f"onChannels error: {e}")
-
-    def onSync(self, interval_us, offset_us, src):
-        """Handle mixer sync (host timing) updates from CRSF frames.
-        Sets the GUI send timer interval to approximate the CRSF RC packet interval.
+    def onLinkStats(self, stats: dict):
+        """Update UI and CSV logging with received link statistics.
+        
+        Args:
+            stats: Parsed link statistics dictionary from CRSF protocol
         """
         try:
-            if interval_us <= 0:
-                return
-            # GUI updates and TX heartbeat update
-            # Record heartbeat time for this TX source
-            try:
-                self._last_tx_heartbeat = time.time()
-                # mark TX connected and update module status
-                if not self._tx_connected:
-                    self._tx_connected = True
-                    # tx name from device discovery if present
-                    tx_name = None
-                    try:
-                        dev = self.serThread.elrs_devices.get(src, {})
-                        tx_name = dev.get('name') if isinstance(dev, dict) else None
-                    except Exception:
-                        tx_name = None
-                    if tx_name:
-                        self._module_status = tx_name
+            # Map CRSF link stats fields to UI labels
+            # uplink_rssi_1 -> 1RSS, uplink_rssi_2 -> 2RSS
+            # uplink_link_quality -> LQ, uplink_snr -> RSNR
+            # rf_mode -> RFMD, uplink_tx_power -> TPWR
+            # downlink_rssi -> TRSS, downlink_link_quality -> TLQ, downlink_snr -> TSNR
+            
+            mapping = {
+                '1RSS': stats.get('uplink_rssi_1', 0),    # Already signed dBm
+                '2RSS': stats.get('uplink_rssi_2', 0),    # Already signed dBm
+                'LQ': stats.get('uplink_link_quality', 0),
+                'RSNR': stats.get('uplink_snr', 0),
+                'RFMD': stats.get('rf_mode', 0),
+                'TPWR': stats.get('uplink_tx_power', 0),
+                'TRSS': stats.get('downlink_rssi', 0),    # Already signed dBm
+                'TLQ': stats.get('downlink_link_quality', 0),
+                'TSNR': stats.get('downlink_snr', 0),
+            }
+            
+            # Update UI labels
+            for key, value in mapping.items():
+                if key in self.telLabels:
+                    label = self.telLabels[key]
+                    # Format based on field type
+                    if 'RSS' in key:
+                        label.setText(f"{value} dBm")
+                    elif 'SNR' in key:
+                        label.setText(f"{value} dB")
+                    elif key in ('LQ', 'TLQ'):
+                        label.setText(f"{value}%")
+                    elif key == 'RFMD':
+                        label.setText(rf_mode_name(value))
+                    elif key == 'TPWR':
+                        label.setText(tx_power_name(value))
                     else:
-                        self._module_status = "Module Connected"
-                    self._update_module_status()
-                    # Enable Configuration tab when module is detected
-                    self.tabs.setTabEnabled(1, True)
-            except Exception as e:
-                self.onDebug(f"onSync heartbeat update error: {e}")
+                        label.setText(str(value))
+                    
+                    # Set color to white (data received)
+                    label.setStyleSheet("color: white;")
+            
+            # Store for CSV logging
+            self.csv_latest_telemetry = mapping
+            
         except Exception as e:
-            self.onDebug(f"onSync error: {e}")
+            self.onDebug(f"Error updating link stats: {e}")
 
-    def tick(self):
-        axes, btns = self.joy.read()
-        joystick_connected = self.joy.j is not None
 
-        # Mapping mode: detect next button press or large axis move
-        if self.mapping_row is not None:
-            base_axes, base_btns = self.mapping_baseline
-            detected = None
-            # Button press has priority
-            if btns and base_btns:
-                for i in range(min(len(btns), len(base_btns))):
-                    if base_btns[i] == 0 and btns[i] == 1:
-                        detected = ("button", i)
-                        break
-            # Axis movement if no button detected
-            if detected is None and axes and base_axes:
-                best_i, best_d = -1, 0.0
-                for i in range(min(len(axes), len(base_axes))):
-                    d = abs(axes[i] - base_axes[i])
-                    if d > best_d:
-                        best_d, best_i = d, i
-                if best_i >= 0 and best_d > 0.35:
-                    detected = ("axis", best_i)
+    def _update_gui(self, ch, axes, btns, joystick_connected):
+        """Update GUI elements with computed channel values.
 
-            if detected is not None:
-                src, idx = detected
-                self.mapping_row.set_mapping(src, idx)
-                try:
-                    self.mapping_row.mapBtn.setText("Map")
-                    self.mapping_row.mapBtn.setEnabled(True)
-                except Exception:
-                    pass
-                self.onDebug(f"Mapped CH{self.mapping_row.idx+1} to {src}[{idx}]")
-                self.mapping_row = None
-                self.save_cfg()
-            elif time.time() - self.mapping_started_at > 5.0:
-                # Timeout after 5 seconds
-                try:
-                    self.mapping_row.mapBtn.setText("Map")
-                    self.mapping_row.mapBtn.setEnabled(True)
-                except Exception:
-                    pass
-                self.onDebug("Mapping timed out; try again.")
-                self.mapping_row = None
-
-        ch = [r.compute(axes, btns) for r in self.rows]
-
-        # Enforce toggle groups: only one toggle per group can be on
-        ch = self._enforce_toggle_groups(ch)
-
+        Args:
+            ch: List of 16 computed channel values
+            axes: List of joystick axis values
+            btns: List of joystick button values
+            joystick_connected: Boolean indicating if joystick is connected
+        """
         # Update joystick visualizers (CH1-4)
         try:
             if len(ch) >= 4:
@@ -719,46 +679,101 @@ class Main(QtWidgets.QWidget):
         except Exception:
             pass
 
-        # Update the shared channel buffer (decoupled); avoid transmitting when joystick disconnected
-        if joystick_connected:
-            try:
-                self.serThread.send_channels(ch)
-            except Exception:
-                pass
+    def tick(self):
+        """
+        Main update loop driven by QTimer(0) — fires as fast as the Qt event
+        queue allows.
 
-        # TX heartbeat timeout: if we haven't seen a sync (handset timing) for >2s, mark TX disconnected
+        Fast path (every tick): joystick sample, failsafe wiring, CRSF state
+        machine (drains RX, emits due frames).
+
+        Throttled paths: GUI redraws at ~60 Hz; CSV logging at 10 Hz.
+        """
+        now = time.monotonic()
+
+        # ---- Always: latency-sensitive serial + joystick path ----
+        axes, btns = self.joy.read()
+        self.latest_axes = axes
+        self.latest_buttons = btns
+        joystick_connected = self.joy.j is not None
+
+        ch = self.joy.compute_channels(axes, btns)
+
+        if joystick_connected:
+            self.crsf_state_machine.update_channels(ch, channels_are_1000_2000=True)
+            self.crsf_state_machine.set_failsafe(False)
+        else:
+            self.crsf_state_machine.set_failsafe(True)
+
+        self.crsf_state_machine.run()
+
+        # ---- Throttled: GUI redraws (~60 Hz) ----
+        if now - self._last_gui_update >= GUI_UPDATE_INTERVAL_S:
+            self._last_gui_update = now
+            self._update_gui(ch, axes, btns, joystick_connected)
+            self._service_mapping(now, axes, btns)
+
+        # ---- Throttled: CSV logging (10 Hz) ----
+        if (self.logging_enabled.isChecked()
+                and now - self.last_log_time >= CSV_LOG_INTERVAL_S):
+            self.last_log_time = now
+            self._log_to_csv(ch)
+
+    def _service_mapping(self, now: float, axes, btns):
+        """Service the joystick-to-channel mapping flow (called at ~60 Hz)."""
+        if self.mapping_row is None:
+            return
         try:
-            if self._tx_connected and (time.time() - self._last_tx_heartbeat) > 2.0:
-                self._tx_connected = False
+            if now - self.mapping_started_at > 5.0:
                 try:
-                    self._module_status = "No module detected"
-                    self._update_module_status()
-                    # Disable Configuration tab when module disconnects
-                    self.tabs.setTabEnabled(1, False)
+                    self.mapping_row.mapBtn.setText("Map")
+                    self.mapping_row.mapBtn.setEnabled(True)
                 except Exception:
                     pass
-                # Reset discovery state for the TX so that a fresh device ping occurs
-                nowt = time.time()
-                if nowt - self._last_tx_reset_time > 1.0:
+                self.onDebug("Mapping timed out; try again.")
+                self.mapping_row = None
+                return
+
+            base_axes, base_btns = self.mapping_baseline
+            detected = None
+            if btns and base_btns:
+                for i in range(min(len(btns), len(base_btns))):
+                    if base_btns[i] == 0 and btns[i] == 1:
+                        detected = ("button", i)
+                        break
+            if detected is None and axes and base_axes:
+                best_i, best_d = -1, 0.0
+                for i in range(min(len(axes), len(base_axes))):
+                    d = abs(axes[i] - base_axes[i])
+                    if d > best_d:
+                        best_d, best_i = d, i
+                if best_i >= 0 and best_d > 0.35:
+                    detected = ("axis", best_i)
+
+            if detected is not None:
+                src, idx = detected
+                try:
+                    self.mapping_row.set_mapping(src, idx)
+                    self.onDebug(f"Mapped CH{self.mapping_row.idx+1} to {src}[{idx}]")
+                    self.save_cfg()
+                except Exception as e:
+                    self.onDebug(f"Mapping save error: {e}")
+                finally:
                     try:
-                        self.serThread.reset_tx_disconnected()
-                    except Exception as e:
-                        self.onDebug(f"Error resetting TX discovery: {e}")
-                    self._last_tx_reset_time = nowt
+                        self.mapping_row.mapBtn.setText("Map")
+                        self.mapping_row.mapBtn.setEnabled(True)
+                    except Exception:
+                        pass
+                    self.mapping_row = None
         except Exception as e:
-            self.onDebug(f"TX heartbeat check failed: {e}")
-
-        # CSV logging at 10Hz (if enabled)
-        now = time.time()
-        if self.logging_enabled.isChecked() and (now - self.csv_last_write_time) >= 0.1:  # 10Hz = 100ms
-            self._log_to_csv(ch)
-            self.csv_last_write_time = now
-
-        # Link stats timeout check
-        timeout = now - self.serThread.last_link_stats_time > 5.0
-        color = "#888888" if timeout else "#e0e0e0"
-        for lab in self.telLabels.values():
-            lab.setStyleSheet(f"color: {color};")
+            self.onDebug(f"Mapping error: {e}")
+            try:
+                if self.mapping_row is not None:
+                    self.mapping_row.mapBtn.setText("Map")
+                    self.mapping_row.mapBtn.setEnabled(True)
+            except Exception:
+                pass
+            self.mapping_row = None
 
     def save_cfg(self):
         self.cfg["channels"] = [r.to_cfg() for r in self.rows]
@@ -857,7 +872,7 @@ class Main(QtWidgets.QWidget):
 
     def _refresh_port_list(self):
         """Refresh the list of available COM ports"""
-        current = self.portCombo.currentText()
+        current = self.portCombo.currentData()  # Get actual port data, not display text
         self.portCombo.blockSignals(True)
         self.portCombo.clear()
         ports = get_available_ports()
@@ -882,17 +897,18 @@ class Main(QtWidgets.QWidget):
 
     def _on_display_mode_changed(self, mode):
         """Handle display mode change between Mode 1, Mode 2, and Channels"""
-        # Save display mode preference to config
-        self.cfg["display_mode"] = mode
+        # Save display mode preference to config as lowercase
+        self.cfg["display_mode"] = mode.lower()
         self._save_cfg_disk()
 
-        if mode == "Channels":
+        mode_lower = mode.lower()
+        if mode_lower == "channels":
             # Hide joystick visualizers and show all channel bars
             self.viz_widget.setVisible(False)
             # Show channels 1-4 in the bars
             for i in range(4):
                 self.bar_widgets[i].setVisible(True)
-        elif mode == "Mode 1 sticks + channels":
+        elif mode_lower == "mode 1 sticks + channels":
             # Show joystick visualizers and hide first 4 channel bars
             self.viz_widget.setVisible(True)
             # Hide channels 1-4 from the bars
@@ -911,7 +927,7 @@ class Main(QtWidgets.QWidget):
                 self.viz1.show()
                 self.viz2.show()
                 self.current_mode = "Mode 1"
-        elif mode == "Mode 2 sticks + channels":
+        elif mode_lower == "mode 2 sticks + channels":
             # Show joystick visualizers and hide first 4 channel bars
             self.viz_widget.setVisible(True)
             # Hide channels 1-4 from the bars
@@ -943,110 +959,17 @@ class Main(QtWidgets.QWidget):
         self.serThread.reconnect(port, DEFAULT_BAUD)
         self.save_cfg()
 
-
-    # Packet rate moved into the Configuration tab as a standard 'select' field.
-    # Writes are handled via the combo control in the config tab which calls _on_param_changed.
-
-    def _on_param_changed(self, fid, value):
-        """Handle parameter change from config tab"""
-        if hasattr(self, 'current_device_id'):
-            device_id = self.current_device_id
-            payload = bytes([device_id, CRSF_ADDRESS_ELRS_LUA, int(fid) & 0xFF, int(value) & 0xFF])
-            try:
-                msg = f"Param cmd: send parameter write payload: {payload.hex()} (dev={device_id}, fid={fid}, value={value})"
-                self.onDebug(msg)
-                try:
-                    # Also emit on the serial thread debug signal so tests/listeners can capture it
-                    self.serThread.debug.emit(msg)
-                except Exception:
-                    pass
-            except Exception:
-                pass
-            self.serThread._send_crsf_cmd(CRSF_FRAMETYPE_PARAMETER_WRITE, payload)
-            # Track pending write so a later device read doesn't override the UI
-            try:
-                self._pending_param_writes[int(fid)] = (value, time.time())
-            except Exception:
-                pass
-            # If RF Band changed, request a refresh of Packet Rate (sibling) so values/options update
-            try:
-                dev = self.serThread.elrs_devices.get(device_id, {})
-                fields = dev.get('fields', {})
-                fld = fields.get(fid, {})
-                if fld and isinstance(fld.get('name', ''), str):
-                    fname = fld.get('name', '').strip().lower()
-                    if fname == 'rf band' or ('rf' in fname and 'band' in fname):
-                        # find the packet rate field id, if present
-                        for pid, pfield in fields.items():
-                            pname = pfield.get('name', '')
-                            if isinstance(pname, str) and pname.strip().lower() == 'packet rate':
-                                self.serThread.request_parameter_read(device_id, pid)
-                                break
-            except Exception as e:
-                self.onDebug(f"Error scheduling Packet Rate reload: {e}")
-
-    def _toggle_log(self):
+    def _toggle_console(self):
         """Toggle console visibility"""
-        self.log_expanded = not self.log_expanded
-        self.log.setVisible(self.log_expanded)
+        self.console_expanded = not self.console_expanded
+        self.console.setVisible(self.console_expanded)
         # Update arrow indicator
-        if self.log_expanded:
-            self.log_header.setText("Console ▼")
+        if self.console_expanded:
+            self.console_header.setText("Console ▼")
         else:
-            self.log_header.setText("Console ▶")
-        # Save state to config
-        self.cfg["console_expanded"] = self.log_expanded
-        self._save_cfg_disk()
-
-    def _on_logging_toggled(self, checked):
-        """Handle logging checkbox toggle"""
-        self.cfg["logging_enabled"] = checked
-        self._save_cfg_disk()
-        if checked:
-            # Capture start time for filename
-            self.csv_start_time = datetime.now()
-            # Start logging - create CSV file
-            self._setup_csv_logging()
-        else:
-            # Stop logging - flush buffer and close
-            self._flush_csv_buffer()
-            if self.csv_filename:
-                self.onDebug(f"CSV logging stopped: {self.csv_filename}")
-                self.csv_filename = None
-                self.csv_start_time = None
-
-    def closeEvent(self, e):
-        try:
-            self.serThread.close()
-        except:
-            pass
-        # Flush and close CSV logging
-        try:
-            self._flush_csv_buffer()
-            if hasattr(self, 'csv_filename') and self.csv_filename:
-                self.onDebug(f"CSV logging stopped: {self.csv_filename}")
-        except:
-            pass
-        e.accept()
-
-    # --- Mapping helpers ---
-    def begin_mapping(self, row: ChannelRow):
-        # If another mapping is active, cancel it visually
-        if self.mapping_row is not None and hasattr(self.mapping_row, "mapBtn"):
-            try:
-                self.mapping_row.mapBtn.setText("Map")
-                self.mapping_row.mapBtn.setEnabled(True)
-            except Exception:
-                pass
-        self.mapping_row = row
-        self.mapping_baseline = self.joy.read()
-        self.mapping_started_at = time.time()
-        try:
-            row.mapBtn.setText("...")
-            row.mapBtn.setEnabled(False)
-        except Exception:
-            pass
-        self.onDebug(f"Move an axis or press a button to map CH{row.idx+1} …")
+            self.console_header.setText("Console ▶")
+        # Save state to app settings
+        self.settings.setValue("console_expanded", self.console_expanded)
 
     def _setup_csv_logging(self):
         """Initialize CSV logging with link stats and channel outputs"""
@@ -1087,17 +1010,13 @@ class Main(QtWidgets.QWidget):
             # Create row with timestamp
             row = {'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]}
 
-            # Add link stats (get latest from telemetry labels)
+            # Add link stats from latest telemetry (stored by onLinkStats callback)
             link_stats_fields = ['1RSS', '2RSS', 'LQ', 'RSNR', 'RFMD', 'TPWR', 'TRSS', 'TLQ', 'TSNR']
             for field in link_stats_fields:
-                try:
-                    text = self.telLabels.get(field, QtWidgets.QLabel("--")).text()
-                    # Extract numeric value (remove units)
-                    if text and text != "--":
-                        row[field] = text.split()[0]  # Get first token (the number)
-                    else:
-                        row[field] = ''
-                except Exception:
+                # Use stored telemetry data if available
+                if field in self.csv_latest_telemetry:
+                    row[field] = self.csv_latest_telemetry[field]
+                else:
                     row[field] = ''
 
             # Add channel values (only for mapped channels)
@@ -1136,558 +1055,628 @@ class Main(QtWidgets.QWidget):
         except Exception as e:
             self.onDebug(f"CSV flush error: {e}")
 
+    def _on_logging_toggled(self, checked):
+        """Handle logging checkbox toggle"""
+        self.settings.setValue("logging_enabled", checked)
+        if checked:
+            # Capture start time for filename
+            self.csv_start_time = datetime.now()
+            # Start logging - create CSV file
+            self._setup_csv_logging()
+        else:
+            # Stop logging - flush buffer and close
+            self._flush_csv_buffer()
+            if self.csv_filename:
+                self.onDebug(f"CSV logging stopped: {self.csv_filename}")
+                self.csv_filename = None
+                self.csv_start_time = None
 
+    # ------------------------------------------------------------------
+    # Configuration tab
+    # ------------------------------------------------------------------
 
-    def _on_device_discovered(self, src: int, details: dict):
-        # Update the UI state when a device is discovered: show device name and mark current device
-        name = details.get('name', 'Unknown')
+    def _create_config_tab(self) -> QtWidgets.QWidget:
+        """Build the Parameters tab widget: device list on left, params on right."""
+        tab = QtWidgets.QWidget()
+        outer = QtWidgets.QHBoxLayout(tab)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(8)
+
+        # ---- Left panel: Devices ----------------------------------------
+        left_panel = QtWidgets.QFrame()
+        left_panel.setObjectName("devicesPanel")
+        left_panel.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        left_panel.setFrameShadow(QtWidgets.QFrame.Raised)
+        left_panel.setStyleSheet("""
+            QFrame#devicesPanel {
+                background-color: #2a2a2a;
+                border: 1px solid #4a4a4a;
+                border-radius: 6px;
+            }
+        """)
+        left_layout = QtWidgets.QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(6, 6, 6, 6)
+        left_layout.setSpacing(4)
+
+        left_header = QtWidgets.QHBoxLayout()
+        dev_title = QtWidgets.QLabel("Devices")
+        dev_title.setStyleSheet("font-weight: bold; font-size: 11pt; border: none;")
+        self._cfg_scan_btn = QtWidgets.QPushButton("Reload")
+        self._cfg_scan_btn.setMaximumWidth(72)
+        self._cfg_scan_btn.clicked.connect(self._lua_scan)
+        left_header.addWidget(dev_title)
+        left_header.addStretch()
+        left_header.addWidget(self._cfg_scan_btn)
+        left_layout.addLayout(left_header)
+
+        left_div = QtWidgets.QFrame()
+        left_div.setFrameShape(QtWidgets.QFrame.HLine)
+        left_div.setFrameShadow(QtWidgets.QFrame.Sunken)
+        left_layout.addWidget(left_div)
+
+        device_scroll = QtWidgets.QScrollArea()
+        device_scroll.setWidgetResizable(True)
+        device_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self._cfg_device_container = QtWidgets.QWidget()
+        self._cfg_device_list_layout = QtWidgets.QVBoxLayout(self._cfg_device_container)
+        self._cfg_device_list_layout.setSpacing(4)
+        self._cfg_device_list_layout.setContentsMargins(0, 0, 0, 0)
+        self._cfg_device_label = QtWidgets.QLabel("Press Reload to discover devices.")
+        self._cfg_device_label.setStyleSheet("color: #888888; border: none;")
+        self._cfg_device_label.setAlignment(QtCore.Qt.AlignCenter)
+        self._cfg_device_list_layout.addWidget(self._cfg_device_label)
+        self._cfg_device_list_layout.addStretch()
+        device_scroll.setWidget(self._cfg_device_container)
+        left_layout.addWidget(device_scroll)
+
+        outer.addWidget(left_panel, 1)
+
+        # ---- Right panel: Parameters ------------------------------------
+        right_panel = QtWidgets.QFrame()
+        right_panel.setObjectName("paramsPanel")
+        right_panel.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        right_panel.setFrameShadow(QtWidgets.QFrame.Raised)
+        right_panel.setStyleSheet("""
+            QFrame#paramsPanel {
+                background-color: #2a2a2a;
+                border: 1px solid #4a4a4a;
+                border-radius: 6px;
+            }
+        """)
+        right_layout = QtWidgets.QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(6, 6, 6, 6)
+        right_layout.setSpacing(4)
+
+        right_header = QtWidgets.QHBoxLayout()
+        self._cfg_device_name_label = QtWidgets.QLabel("Select a device")
+        self._cfg_device_name_label.setStyleSheet("font-weight: bold; font-size: 11pt; border: none;")
+        self._cfg_reload_btn = QtWidgets.QPushButton("Reload")
+        self._cfg_reload_btn.setMaximumWidth(72)
+        self._cfg_reload_btn.setEnabled(False)
+        self._cfg_reload_btn.clicked.connect(self._lua_reload)
+        right_header.addWidget(self._cfg_device_name_label)
+        right_header.addStretch()
+        right_header.addWidget(self._cfg_reload_btn)
+        right_layout.addLayout(right_header)
+
+        right_div = QtWidgets.QFrame()
+        right_div.setFrameShape(QtWidgets.QFrame.HLine)
+        right_div.setFrameShadow(QtWidgets.QFrame.Sunken)
+        right_layout.addWidget(right_div)
+
+        # Linkstat row: RX connection indicator + bad/good packet counters
+        self._cfg_linkstat_row = QtWidgets.QWidget()
+        linkstat_layout = QtWidgets.QHBoxLayout(self._cfg_linkstat_row)
+        linkstat_layout.setContentsMargins(2, 2, 2, 2)
+        linkstat_layout.setSpacing(8)
+        self._cfg_rx_status_label = QtWidgets.QLabel("--")
+        self._cfg_rx_status_label.setStyleSheet(
+            "color: #e0e0e0; background-color: #3c3c3c; border: 1px solid #555555;"
+            " border-radius: 3px; padding: 1px 6px;"
+        )
+        self._cfg_pkt_label = QtWidgets.QLabel("0/0")
+        self._cfg_pkt_label.setStyleSheet(
+            "color: #e0e0e0; background-color: #3c3c3c; border: 1px solid #555555;"
+            " border-radius: 3px; padding: 1px 6px; font-family: monospace;"
+        )
+        linkstat_layout.addWidget(self._cfg_rx_status_label)
+        linkstat_layout.addWidget(self._cfg_pkt_label)
+        linkstat_layout.addStretch()
+        self._cfg_linkstat_row.setVisible(False)
+        right_layout.addWidget(self._cfg_linkstat_row)
+
+        # Stacked: 0 = empty/no selection, 1 = loading, 2 = params
+        self._cfg_stack = QtWidgets.QStackedWidget()
+
+        # Pane 0: no device selected
+        empty_pane = QtWidgets.QWidget()
+        empty_layout = QtWidgets.QVBoxLayout(empty_pane)
+        no_device_lbl = QtWidgets.QLabel("No device selected")
+        no_device_lbl.setAlignment(QtCore.Qt.AlignCenter)
+        no_device_lbl.setStyleSheet("color: #888888; border: none;")
+        empty_layout.addStretch()
+        empty_layout.addWidget(no_device_lbl)
+        empty_layout.addStretch()
+        self._cfg_stack.addWidget(empty_pane)
+
+        # Pane 1: loading
+        self._cfg_loading_pane = QtWidgets.QWidget()
+        loading_layout = QtWidgets.QVBoxLayout(self._cfg_loading_pane)
+        self._cfg_loading_label = QtWidgets.QLabel("Loading parameters...")
+        self._cfg_loading_label.setAlignment(QtCore.Qt.AlignCenter)
+        self._cfg_loading_label.setStyleSheet("border: none;")
+        self._cfg_progress = QtWidgets.QProgressBar()
+        self._cfg_progress.setRange(0, 100)
+        self._cfg_progress.setValue(0)
+        loading_layout.addStretch()
+        loading_layout.addWidget(self._cfg_loading_label)
+        loading_layout.addWidget(self._cfg_progress)
+        loading_layout.addStretch()
+        self._cfg_stack.addWidget(self._cfg_loading_pane)
+
+        # Pane 2: params
+        self._cfg_params_pane = QtWidgets.QWidget()
+        params_outer = QtWidgets.QVBoxLayout(self._cfg_params_pane)
+        params_outer.setContentsMargins(0, 0, 0, 0)
+        params_outer.setSpacing(4)
+
+        breadcrumb_row = QtWidgets.QHBoxLayout()
+        self._cfg_back_btn = QtWidgets.QPushButton("← Back")
+        self._cfg_back_btn.setMaximumWidth(80)
+        self._cfg_back_btn.clicked.connect(self._lua_back)
+        self._cfg_back_btn.setVisible(False)
+        self._cfg_breadcrumb = QtWidgets.QLabel("Home")
+        self._cfg_breadcrumb.setStyleSheet("border: none;")
+        breadcrumb_row.addWidget(self._cfg_back_btn)
+        breadcrumb_row.addWidget(self._cfg_breadcrumb)
+        breadcrumb_row.addStretch()
+        params_outer.addLayout(breadcrumb_row)
+
+        self._cfg_params_scroll = QtWidgets.QScrollArea()
+        self._cfg_params_scroll.setWidgetResizable(True)
+        self._cfg_params_content = QtWidgets.QWidget()
+        self._cfg_params_content_layout = QtWidgets.QVBoxLayout(self._cfg_params_content)
+        self._cfg_params_content_layout.setSpacing(4)
+        self._cfg_params_content_layout.addStretch()
+        self._cfg_params_scroll.setWidget(self._cfg_params_content)
+        params_outer.addWidget(self._cfg_params_scroll)
+
+        self._cfg_stack.addWidget(self._cfg_params_pane)
+
+        right_layout.addWidget(self._cfg_stack)
+        outer.addWidget(right_panel, 2)
+
+        return tab
+
+    # -- LUA callbacks (called inline on the GUI thread) -----------------
+
+    def _lua_on_devices(self, devices: list) -> None:
+        """Rebuild the device list panel."""
         try:
-            # Only set current_device_id for TX modules, not receivers
-            if src in (CRSF_ADDRESS_CRSF_TRANSMITTER, CRSF_ADDRESS_TRANSMITTER_LEGACY):
-                self.serThread.current_device_id = src
-                # Update the module name in tab title
-                try:
-                    self._module_status = name
-                    self._update_module_status()
-                except Exception:
-                    pass
-            self.onDebug(f"Device discovered: {name} addr=0x{src:02X}")
-            # If this device has params to load, show loading indicator
-            n_params = details.get('n_params', 0)
-            loaded = details.get('loaded', False)
-            try:
-                if n_params and n_params > 0 and not loaded:
-                    self.config_loading.setVisible(True)
-                else:
-                    self.config_loading.setVisible(False)
-            except Exception:
-                pass
-        except Exception:
-            pass
+            # Layout is: [label(0), ...cards..., stretch(last)]
+            # Clear only the card widgets between label and stretch (indices 1..count-2)
+            while self._cfg_device_list_layout.count() > 2:
+                item = self._cfg_device_list_layout.takeAt(1)
+                if item.widget():
+                    item.widget().deleteLater()
 
-    def _on_device_parameters_loaded(self, src: int, details: dict):
-        # Populate packet rate dropdown when parameters are loaded
-        fields = details.get('fields', {})
-        for fid, field in fields.items():
-            # Packet Rate combo moved into the configuration tab UI; the config tab will populate it
-            # The _populate_config_tab function will create a QComboBox for this field like any other select.
-            pass
-
-        # Only populate config tab after the serial thread indicates the device is fully loaded
-        loaded = details.get('loaded', False)
-        if not loaded:
-            # keep spinner visible, but don't re-populate the config tab until fully loaded
-            try:
-                self.config_loading.setVisible(True)
-            except Exception:
-                pass
-            return
-
-        # Hide loading indicator and populate the UI once full parameters are available
-        try:
-            self.config_loading.setVisible(False)
-            try:
-                if hasattr(self, '_config_refresh_button'):
-                    self._config_refresh_button.setEnabled(True)
-            except Exception:
-                pass
-        except Exception:
-            pass
-
-        # Populate config tab with all parameters (full reload only after device loaded)
-        self._populate_config_tab(fields, src)
-        # Clear pending writes that are now reflected by the device
-        try:
-            # Walk pending writes list and remove if device now reports same value
-            dev = self.serThread.elrs_devices.get(src, {})
-            dev_fields = dev.get('fields', {})
-            to_clear = []
-            for pfid, (pval, ts) in list(self._pending_param_writes.items()):
-                fld = dev_fields.get(int(pfid))
-                if fld is None:
-                    continue
-                dev_val = fld.get('value', fld.get('status', None))
-                if dev_val == pval:
-                    to_clear.append(int(pfid))
-            for pfid in to_clear:
-                try:
-                    del self._pending_param_writes[int(pfid)]
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-    def _on_device_parameters_progress(self, src: int, fetched: int, total: int):
-        try:
-            if total and total > 0:
-                self.config_loading.setRange(0, total)
-                self.config_loading.setValue(fetched)
-                if fetched < total:
-                    self.config_loading.setVisible(True)
-                else:
-                    self.config_loading.setVisible(False)
+            if devices:
+                self._cfg_device_label.setVisible(False)
+                for device in devices:
+                    card = self._make_device_card(device)
+                    self._cfg_device_list_layout.insertWidget(
+                        self._cfg_device_list_layout.count() - 1, card
+                    )
             else:
-                # unknown total: show busy indicator (indeterminate)
-                self.config_loading.setRange(0, 0)
-                self.config_loading.setVisible(True)
-        except Exception as e:
-            self.onDebug(f"_on_device_parameters_progress error: {e}")
+                self._cfg_device_label.setText("No devices found.")
+                self._cfg_device_label.setVisible(True)
 
-    def _on_device_parameter_field_updated(self, src: int, fid: int, field: dict):
-        """Update the specific widget for a field when the device returns its value.
-        Honors pending writes and does not overwrite user's selection while pending.
-        """
+            self._selected_card = None
+            self._cfg_scan_btn.setEnabled(True)
+            self._cfg_scan_btn.setText("Reload")
+            self._cfg_device_name_label.setText("Select a device")
+            self._cfg_stack.setCurrentIndex(0)
+            self._cfg_reload_btn.setEnabled(False)
+            self._cfg_linkstat_row.setVisible(False)
+        except Exception as e:
+            self.onDebug(f"Config device list error: {e}")
+
+    def _make_device_card(self, device: dict) -> QtWidgets.QFrame:
+        """Build a clickable device card"""
+        name     = device.get('name', '???')
+        addr     = device.get('address', 0)
+        n_params = device.get('parametersTotal', '?')
+
+        card = QtWidgets.QFrame()
+        card.setFrameShape(QtWidgets.QFrame.StyledPanel)
+        card.setCursor(QtCore.Qt.PointingHandCursor)
+        card.setStyleSheet("""
+            QFrame {
+                border: 1px solid #555555;
+                border-radius: 4px;
+                background-color: #3c3c3c;
+            }
+            QFrame:hover {
+                background-color: #4a4a4a;
+                border-color: #888888;
+            }
+        """)
+
+        card_layout = QtWidgets.QVBoxLayout(card)
+        card_layout.setContentsMargins(8, 6, 8, 6)
+        card_layout.setSpacing(2)
+
+        name_lbl = QtWidgets.QLabel(name)
+        name_lbl.setStyleSheet("font-weight: bold; border: none; background: transparent;")
+
+        addr_lbl = QtWidgets.QLabel(f"0x{addr:02X}")
+        addr_lbl.setStyleSheet("color: #888888; font-family: monospace; font-size: 8pt; border: none; background: transparent;")
+
+        count_lbl = QtWidgets.QLabel(f"{n_params} params")
+        count_lbl.setStyleSheet("color: #888888; font-size: 8pt; border: none; background: transparent;")
+
+        card_layout.addWidget(name_lbl)
+        card_layout.addWidget(addr_lbl)
+        card_layout.addWidget(count_lbl)
+
+        dev = device
+        card.mousePressEvent = lambda e, d=dev, c=card: self._lua_select_device(d, c)
+
+        return card
+
+    def _lua_on_progress(self, loaded: int, total: int) -> None:
         try:
-            widget = self._config_field_widgets.get(int(fid))
-            if widget is None:
+            self._cfg_loading_label.setText(f"Loading parameters... ({loaded}/{total})")
+            pct = int(loaded * 100 / total) if total else 0
+            self._cfg_progress.setValue(pct)
+            self._cfg_stack.setCurrentIndex(1)
+        except Exception:
+            pass
+
+    def _lua_on_complete(self, parameters: dict) -> None:
+        try:
+            self._render_params()
+            self._cfg_stack.setCurrentIndex(2)
+            self._cfg_reload_btn.setEnabled(True)
+        except Exception as e:
+            self.onDebug(f"Config render error: {e}")
+
+    def _lua_on_aborted(self, message: str) -> None:
+        try:
+            self._cfg_device_label.setText(f"Error: {message}")
+            self._cfg_device_label.setVisible(True)
+            self._cfg_device_name_label.setText("Select a device")
+            self._cfg_stack.setCurrentIndex(0)
+            self._cfg_reload_btn.setEnabled(False)
+        except Exception:
+            pass
+
+    def _lua_on_field(self, param: dict) -> None:
+        pass  # re-render happens in on_loading_complete after reload chain
+
+    def _lua_on_elrs_status_update(self, bad_pkt: int, good_pkt: int, flags: int) -> None:
+        try:
+            rx_connected = bool(flags & 0x01)
+            if rx_connected:
+                self._cfg_rx_status_label.setText("RX Connected")
+                self._cfg_rx_status_label.setStyleSheet(
+                    "color: #ffffff; background-color: #2e7d32; border-radius: 3px; padding: 1px 6px;"
+                )
+            else:
+                self._cfg_rx_status_label.setText("RX Disconnected")
+                self._cfg_rx_status_label.setStyleSheet(
+                    "color: #ffffff; background-color: #c62828; border-radius: 3px; padding: 1px 6px;"
+                )
+            self._cfg_pkt_label.setText(f"{bad_pkt}/{good_pkt}")
+        except Exception:
+            pass
+
+    def _lua_set_banner_mode(self, mode: str) -> None:
+        """Configure banner for 'error' (red, no Cancel) or 'confirm' (amber, with Cancel)."""
+        if mode == 'error':
+            self._lua_error_banner.setStyleSheet(
+                "background-color: #c62828; border-radius: 4px;"
+            )
+            self._lua_cancel_btn.setVisible(False)
+        else:
+            self._lua_error_banner.setStyleSheet(
+                "background-color: #e65100; border-radius: 4px;"
+            )
+            self._lua_cancel_btn.setVisible(True)
+        self._lua_banner_mode = mode
+
+    def _lua_banner_ok(self) -> None:
+        """OK button: clear error or confirm command depending on current mode."""
+        self._lua_error_banner.setVisible(False)
+        if getattr(self, '_lua_banner_mode', 'error') == 'confirm':
+            if self._lua_confirm_param_num is not None:
+                self.lua.confirm_command(self._lua_confirm_param_num)
+            self._lua_confirm_param_num = None
+        else:
+            self.lua.clear_elrs_error()
+
+    def _lua_confirm_cancel(self) -> None:
+        """Cancel button: dismiss confirm banner without sending confirmation."""
+        self._lua_error_banner.setVisible(False)
+        self._lua_confirm_param_num = None
+        self.lua.cancel_command()
+
+    def _lua_on_elrs_error(self, msg: str) -> None:
+        """Show the error banner (e.g. 'Not while connected')."""
+        self._lua_set_banner_mode('error')
+        self._lua_error_label.setText(msg)
+        self._lua_error_banner.setVisible(True)
+
+    def _lua_on_elrs_confirm(self, msg: str, param_num: int) -> None:
+        """Show the confirmation banner (e.g. 'Enable WiFi while connected?')."""
+        self._lua_confirm_param_num = param_num
+        self._lua_set_banner_mode('confirm')
+        self._lua_error_label.setText(msg)
+        self._lua_error_banner.setVisible(True)
+
+    # -- Configuration tab actions ---------------------------------------
+
+    def _lua_scan(self) -> None:
+        self._cfg_scan_btn.setEnabled(False)
+        self._cfg_scan_btn.setText("Scanning...")
+        self._cfg_device_label.setText("Scanning for devices...")
+        self._cfg_device_label.setVisible(True)
+        self.lua.scan_devices()
+        self._cfg_stack.setCurrentIndex(0)
+        self._cfg_reload_btn.setEnabled(False)
+
+    def _on_tab_changed(self, index: int) -> None:
+        if index == 1 and self._params_tab_first_visit:
+            self._params_tab_first_visit = False
+            self._lua_scan()
+
+    def _lua_reload(self) -> None:
+        if self.lua.selected_device:
+            self._cfg_loading_label.setText("Loading parameters... (0/0)")
+            self._cfg_progress.setValue(0)
+            self._cfg_stack.setCurrentIndex(1)
+            self.lua.load_parameters()
+
+    def _lua_select_device(self, device: dict, card: QtWidgets.QFrame = None) -> None:
+        if self._selected_card is not None:
+            self._selected_card.setStyleSheet("""
+                QFrame {
+                    border: 1px solid #555555;
+                    border-radius: 4px;
+                    background-color: #3c3c3c;
+                }
+                QFrame:hover {
+                    background-color: #4a4a4a;
+                    border-color: #888888;
+                }
+            """)
+        self._selected_card = card
+        if card is not None:
+            card.setStyleSheet("""
+                QFrame {
+                    border: 2px solid #1e88e5;
+                    border-radius: 4px;
+                    background-color: #3c3c3c;
+                }
+                QFrame:hover {
+                    background-color: #4a4a4a;
+                    border-color: #1e88e5;
+                }
+            """)
+        name = device.get('name', '???')
+        self._cfg_device_name_label.setText(name)
+        self._cfg_loading_label.setText(
+            f"Loading parameters... (0/{device.get('parametersTotal', '?')})"
+        )
+        self._cfg_progress.setValue(0)
+        self._cfg_stack.setCurrentIndex(1)
+        is_elrs_tx = device.get('isElrs', False) and device.get('address') == CRSF_ADDRESS_MODULE
+        if is_elrs_tx:
+            _placeholder_style = (
+                "color: #e0e0e0; background-color: #3c3c3c; border: 1px solid #555555;"
+                " border-radius: 3px; padding: 1px 6px;"
+            )
+            self._cfg_rx_status_label.setText("--")
+            self._cfg_rx_status_label.setStyleSheet(_placeholder_style)
+            self._cfg_pkt_label.setText("--/--")
+        self._cfg_linkstat_row.setVisible(is_elrs_tx)
+        self.lua.select_device(device)
+
+    def _lua_back(self) -> None:
+        self.lua.navigate_back()
+        self._render_params()
+
+    # -- Parameter rendering ---------------------------------------------
+
+    def _render_params(self) -> None:
+        """Rebuild the parameter widget list for the current folder."""
+        try:
+            # Remove all widgets except the trailing stretch
+            layout = self._cfg_params_content_layout
+            while layout.count() > 1:
+                item = layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+
+            # Breadcrumb
+            if self.lua.folder_stack:
+                crumbs = ["Home"] + [e['name'] for e in self.lua.folder_stack]
+                self._cfg_breadcrumb.setText(" > ".join(crumbs))
+                self._cfg_back_btn.setVisible(True)
+            else:
+                self._cfg_breadcrumb.setText("Home")
+                self._cfg_back_btn.setVisible(False)
+
+            # Visible params for current folder, sorted by number
+            visible = sorted(
+                [p for p in self.lua.parameters.values()
+                 if p['parentFolder'] == self.lua.current_folder
+                 and not p['hidden']],
+                key=lambda p: p['number'],
+            )
+
+            for param in visible:
+                row_widget = self._make_param_row(param)
+                if row_widget:
+                    layout.insertWidget(layout.count() - 1, row_widget)
+        except Exception as e:
+            self.onDebug(f"Render params error: {e}")
+
+    def _make_param_row(self, param: dict) -> QtWidgets.QWidget:
+        """Build a single parameter row widget."""
+        try:
+            container = QtWidgets.QWidget()
+            row = QtWidgets.QHBoxLayout(container)
+            row.setContentsMargins(2, 1, 2, 1)
+
+            fid   = param['number']
+            ptype = param['type']
+            name  = param['name'] or f"Param {fid}"
+            label = QtWidgets.QLabel(name)
+            label.setMinimumWidth(160)
+            label.setMaximumWidth(200)
+            row.addWidget(label)
+
+            if ptype in (PARAM_TYPE_UINT8, PARAM_TYPE_INT8):
+                spin = NoWheelSpinBox()
+                if ptype == PARAM_TYPE_INT8:
+                    lo = param['min'] if param['min'] is not None else -128
+                    hi = param['max'] if param['max'] is not None else 127
+                else:
+                    lo = param['min'] if param['min'] is not None else 0
+                    hi = param['max'] if param['max'] is not None else 255
+                spin.setRange(lo, hi)
+                spin.blockSignals(True)
+                spin.setValue(param['value'] if param['value'] is not None else lo)
+                spin.blockSignals(False)
+                if param['unit']:
+                    spin.setSuffix(f" {param['unit']}")
+                spin.valueChanged.connect(
+                    lambda v, f=fid: self._on_param_changed(f, v)
+                )
+                row.addWidget(spin)
+
+            elif ptype == PARAM_TYPE_TEXT_SELECTION:
+                combo = NoWheelComboBox()
+                # AdjustToContents makes sizeHint() = widest item, so the popup
+                # inherits that width and doesn't clip option text.
+                combo.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
+                combo.setMinimumWidth(180)
+                for i, opt in enumerate(param.get('options') or []):
+                    if opt.strip():
+                        combo.addItem(opt, i)
+                combo.blockSignals(True)
+                current_val = param.get('value')
+                for j in range(combo.count()):
+                    if combo.itemData(j) == current_val:
+                        combo.setCurrentIndex(j)
+                        break
+                combo.blockSignals(False)
+                combo.currentIndexChanged.connect(
+                    lambda idx, f=fid, c=combo: self._on_param_changed(
+                        f, c.itemData(idx) if idx >= 0 else 0
+                    )
+                )
+                # Stretch factor 1: combo expands to fill the row instead of the
+                # trailing spacer stealing all remaining width.
+                row.addWidget(combo, 1)
+
+            elif ptype == PARAM_TYPE_FOLDER:
+                btn = QtWidgets.QPushButton("Enter")
+                btn.clicked.connect(
+                    lambda _, f=fid, n=name: self._lua_enter_folder(f, n)
+                )
+                row.addWidget(btn)
+
+            elif ptype == PARAM_TYPE_INFO:
+                val_label = QtWidgets.QLabel(str(param.get('value') or ''))
+                val_label.setStyleSheet("color: #aaaaaa;")
+                row.addWidget(val_label)
+
+            elif ptype == PARAM_TYPE_COMMAND:
+                btn_text = param.get('value') or "Execute"
+                btn = QtWidgets.QPushButton(btn_text)
+                btn.clicked.connect(
+                    lambda _, f=fid: self._on_param_changed(f, 1)  # status=START
+                )
+                row.addWidget(btn)
+
+            elif ptype == PARAM_TYPE_STRING:
+                val_label = QtWidgets.QLabel(str(param.get('value') or ''))
+                val_label.setStyleSheet("color: #aaaaaa;")
+                row.addWidget(val_label)
+
+            else:
+                row.addWidget(QtWidgets.QLabel(f"Unsupported type 0x{ptype:02X}"))
+
+            row.addStretch()
+            return container
+        except Exception as e:
+            self.onDebug(f"Param row error (fid={param.get('number')}): {e}")
+            return None
+
+    def _lua_enter_folder(self, folder_id: int, name: str) -> None:
+        self.lua.navigate_to_folder(folder_id, name)
+        self._render_params()
+
+    def _on_param_changed(self, fid: int, value: int) -> None:
+        if not self.lua.update_parameter(int(fid), int(value)):
+            self.onDebug(f"param write rejected (fid={fid})")
+
+    def closeEvent(self, e):
+        try:
+            self.joy.stop_thread()
+        except:
+            pass
+        try:
+            self.serThread.close()
+        except:
+            pass
+        e.accept()
+
+    # --- Mapping helpers ---
+    def begin_mapping(self, row: ChannelRow):
+        try:
+            # If another mapping is active, cancel it visually
+            if self.mapping_row is not None and hasattr(self.mapping_row, "mapBtn"):
+                try:
+                    self.mapping_row.mapBtn.setText("Map")
+                    self.mapping_row.mapBtn.setEnabled(True)
+                except Exception:
+                    pass
+
+            # Verify joystick is connected before starting mapping
+            if self.joy.j is None:
+                self.onDebug("No joystick connected. Cannot map channel.")
                 return
-            # Check for pending write
-            pending = self._pending_param_writes.get(int(fid))
-            if pending:
-                desired, ts = pending
-                dev_value = field.get('value', field.get('status', None))
-                if dev_value == desired:
-                    try:
-                        if isinstance(widget, QtWidgets.QComboBox):
-                            ftype = field.get('type', -1)
-                            widget.blockSignals(True)
-                            # For numeric types (0-8), dev_value is the actual value, need to find index
-                            if 0 <= ftype <= 8:
-                                # Search combo items to find matching value
-                                target_idx = 0
-                                for i in range(widget.count()):
-                                    item_text = widget.itemText(i)
-                                    # Extract numeric value from text (strip unit if present)
-                                    try:
-                                        numeric_part = ''.join(c for c in item_text if c.isdigit() or c == '-')
-                                        if numeric_part and int(numeric_part) == int(dev_value):
-                                            target_idx = i
-                                            break
-                                    except Exception:
-                                        pass
-                                widget.setCurrentIndex(target_idx)
-                            else:
-                                # For selection type (9), dev_value is the index
-                                widget.setCurrentIndex(int(dev_value))
-                            widget.blockSignals(False)
-                        elif isinstance(widget, QtWidgets.QSpinBox):
-                            try:
-                                widget.blockSignals(True)
-                                widget.setValue(int(dev_value))
-                                widget.blockSignals(False)
-                            except Exception:
-                                widget.setValue(int(dev_value))
-                        elif isinstance(widget, QtWidgets.QLabel) or isinstance(widget, QtWidgets.QPushButton):
-                            text_val = field.get('info', field.get('value', ''))
-                            widget.setText(str(text_val))
-                    except Exception:
-                        pass
-                    try:
-                        del self._pending_param_writes[int(fid)]
-                    except Exception:
-                        pass
-                else:
-                    if time.time() - ts > 5.0:
-                        try:
-                            del self._pending_param_writes[int(fid)]
-                        except Exception:
-                            pass
-                    return
-            else:
-                dev_value = field.get('value', field.get('status', None))
-                try:
-                    if isinstance(widget, QtWidgets.QComboBox) and dev_value is not None:
-                        ftype = field.get('type', -1)
-                        widget.blockSignals(True)
-                        # For numeric types (0-8), dev_value is the actual value, need to find index
-                        if 0 <= ftype <= 8:
-                            # Search combo items to find matching value
-                            target_idx = 0
-                            for i in range(widget.count()):
-                                item_text = widget.itemText(i)
-                                # Extract numeric value from text (strip unit if present)
-                                try:
-                                    numeric_part = ''.join(c for c in item_text if c.isdigit() or c == '-')
-                                    if numeric_part and int(numeric_part) == int(dev_value):
-                                        target_idx = i
-                                        break
-                                except Exception:
-                                    pass
-                            widget.setCurrentIndex(target_idx)
-                        else:
-                            # For selection type (9), dev_value is the index
-                            widget.setCurrentIndex(int(dev_value))
-                        widget.blockSignals(False)
-                    elif isinstance(widget, QtWidgets.QSpinBox) and dev_value is not None:
-                        try:
-                            widget.blockSignals(True)
-                            widget.setValue(int(dev_value))
-                            widget.blockSignals(False)
-                        except Exception:
-                            widget.setValue(int(dev_value))
-                    elif isinstance(widget, QtWidgets.QLabel) or isinstance(widget, QtWidgets.QPushButton):
-                        text_val = field.get('info', field.get('value', ''))
-                        widget.setText(str(text_val))
-                except Exception:
-                    pass
+
+            # Use cached baseline joystick state from JoystickHandler
+            axes = list(self.latest_axes) if self.latest_axes else []
+            btns = list(self.latest_buttons) if self.latest_buttons else []
+            if not axes and not btns:
+                self.onDebug("Cannot read joystick state. Cannot map channel.")
+                return
+
+            self.mapping_row = row
+            self.mapping_baseline = (axes, btns)
+            self.mapping_started_at = time.monotonic()
+            try:
+                row.mapBtn.setText("...")
+                row.mapBtn.setEnabled(False)
+            except Exception:
+                pass
+            self.onDebug(f"Move an axis or press a button to map CH{row.idx+1} …")
         except Exception as e:
-            self.onDebug(f"_on_device_parameter_field_updated error: {e}")
-
-    def _populate_config_tab(self, fields, src):
-        # Clear existing widgets in config tab
-        config_tab = self.tabs.widget(1)  # Configuration tab
-        if config_tab.layout():
-            layout = config_tab.layout()
-            # Clear all widgets from the existing layout
-            # some widgets in the config tab are permanent (like the loading bar)
-            # We'll skip deleting them here and re-insert afterwards
-            keep_loading_widget = None
-            while layout.count():
-                child = layout.takeAt(0)
-                if child.widget():
-                    w = child.widget()
-                    try:
-                        # Don't delete the global config_loading widget; keep it and re-add later
-                        if hasattr(self, 'config_loading') and w is self.config_loading:
-                            # Remove from layout now but save to re-add
-                            w.setParent(None)
-                            keep_loading_widget = w
-                        else:
-                            w.setParent(None)
-                            w.deleteLater()
-                    except Exception:
-                        pass
-                elif child.layout():
-                    # Recursively delete potentially nested layout widgets
-                    sub = child.layout()
-                    while sub.count():
-                        subchild = sub.takeAt(0)
-                        if subchild.widget():
-                            w = subchild.widget()
-                            try:
-                                if hasattr(self, 'config_loading') and w is self.config_loading:
-                                    w.setParent(None)
-                                    keep_loading_widget = w
-                                else:
-                                    w.setParent(None)
-                                    w.deleteLater()
-                            except Exception:
-                                pass
-            # Reinsert the loading widget at top if we preserved it
-            if keep_loading_widget is not None:
-                try:
-                    layout.insertWidget(0, keep_loading_widget)
-                except Exception:
-                    try:
-                        layout.addWidget(keep_loading_widget)
-                    except Exception:
-                        pass
-
-        # Reuse existing layout if present, otherwise create new
-        layout = config_tab.layout()
-        if layout is None:
-            layout = QtWidgets.QVBoxLayout(config_tab)
-            config_tab.setLayout(layout)
-
-        # Reset widget mapping for this repopulation
-        try:
-            self._config_field_widgets.clear()
-        except Exception:
-            pass
-        # Create scrollable area
-        # Remove any existing scroll area if present
-        # (look for first QScrollArea child and delete it to avoid duplicates)
-        for child in config_tab.findChildren(QtWidgets.QScrollArea):
+            self.onDebug(f"Error starting mapping: {e}")
+            # Reset button if anything goes wrong
             try:
-                child.setParent(None)
-                child.deleteLater()
+                if row and hasattr(row, "mapBtn"):
+                    row.mapBtn.setText("Map")
+                    row.mapBtn.setEnabled(True)
             except Exception:
                 pass
+            self.mapping_row = None
 
-        scroll = QtWidgets.QScrollArea()
-        scroll.setWidgetResizable(True)
-        widget = QtWidgets.QWidget()
-        widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
-        inner_layout = QtWidgets.QVBoxLayout(widget)
-        # Add a small toolbar with a Refresh button at the top of the config tab
-        toolbar = QtWidgets.QHBoxLayout()
-        refresh_btn = QtWidgets.QPushButton("Refresh")
-        refresh_btn.setMaximumWidth(120)
-        toolbar.addWidget(refresh_btn)
-        toolbar.addStretch()
-        # insert toolbar at top of root layout
-        try:
-            layout.addLayout(toolbar)
-        except Exception:
-            pass
-        def _refresh_clicked():
-            try:
-                dev = self.current_device_id if self.current_device_id in self.serThread.elrs_devices else (list(self.serThread.elrs_devices.keys())[0] if self.serThread.elrs_devices else None)
-                if dev is not None:
-                    fields = self.serThread.elrs_devices[dev].get('fields', {})
-                    loaded = self.serThread.elrs_devices[dev].get('loaded', False)
-                    # Always show loading indicator when user clicks refresh
-                    try:
-                        self.config_loading.setVisible(True)
-                    except Exception:
-                        pass
-                    try:
-                        if hasattr(self, '_config_refresh_button'):
-                            self._config_refresh_button.setEnabled(False)
-                    except Exception:
-                        pass
-                    # Trigger a full device reload regardless of loaded flag
-                    try:
-                        self.serThread.request_device_reload(dev)
-                    except Exception as e:
-                        self.onDebug(f"Refresh reload request failed: {e}")
-            except Exception as e:
-                self.onDebug(f"Refresh error: {e}")
-        refresh_btn.clicked.connect(_refresh_clicked)
-        # remember the refresh button for toggling
-        try:
-            self._config_refresh_button = refresh_btn
-        except Exception:
-            pass
-        # Expose refresh function for testing and external calls
-        try:
-            self._refresh_clicked = _refresh_clicked
-        except Exception:
-            pass
-
-        # Build map of group layouts for parents (store groupbox and layout)
-        group_layouts = {}
-        # Precompute which field ids are used as parents so we can avoid adding
-        # duplicate QLabel entries when a folder is represented by a QGroupBox.
-        parents_set = set()
-        for ff in fields.values():
-            try:
-                p = ff.get('parent', 0)
-                if p:
-                    try:
-                        parents_set.add(int(p))
-                    except Exception:
-                        parents_set.add(p)
-            except Exception:
-                pass
-        for fid, field in fields.items():
-            try:
-                name = field.get('name', '')
-                # include Packet Rate in the config tab like any other field
-                ftype = field.get('type', 0)
-                parent = field.get('parent', 0)
-                # determine which layout to add to (parent grouping)
-                target_layout = inner_layout
-                if parent and parent in group_layouts:
-                    target_layout = group_layouts[parent][1]
-                elif parent and parent not in group_layouts:
-                    # create a new group box placeholder for this parent and add it to root
-                    parent_name = fields.get(parent, {}).get('name', f'Folder {parent}')
-                    group_box = QtWidgets.QGroupBox(str(parent_name))
-                    group_layout = QtWidgets.QVBoxLayout(group_box)
-                    inner_layout.addWidget(group_box)
-                    group_layouts[parent] = (group_box, group_layout)
-                    target_layout = group_layout
-
-                if ftype == 9:  # select/choice
-                    row_layout = QtWidgets.QHBoxLayout()
-                    label = QtWidgets.QLabel(f"{name}:")
-                    combo = NoWheelComboBox()
-                    values = field.get('values', [])
-                    # If this field has a mapped unit and values are plain numeric strings,
-                    # display them with the unit suffix in the UI (but keep the underlying indices the same).
-                    try:
-                        unit = UNIT_MAP.get(name.strip().lower())
-                        display_values = []
-                        for v in values:
-                            if unit and isinstance(v, str) and re.search(r'[A-Za-z%]', v) is None:
-                                # Append unit without whitespace (e.g., 10mW)
-                                display_values.append(f"{v}{unit}")
-                            else:
-                                display_values.append(v)
-                        combo.addItems(display_values)
-                    except Exception:
-                        combo.addItems(values)
-                    # prefer explicit selection index if present
-                    sel_idx = field.get('value', field.get('status', 0))
-                    try:
-                        if isinstance(sel_idx, str):
-                            sel_idx = int(sel_idx)
-                    except Exception:
-                        sel_idx = 0
-                    # Honor any pending write for this field - prefer the user's desired value
-                    pending = self._pending_param_writes.get(int(fid)) if hasattr(self, '_pending_param_writes') else None
-                    if pending:
-                        desired, ts = pending
-                        try:
-                            if 0 <= int(desired) < len(values):
-                                combo.blockSignals(True)
-                                combo.setCurrentIndex(int(desired))
-                                combo.blockSignals(False)
-                        except Exception:
-                            pass
-                    elif 0 <= sel_idx < len(values):
-                        combo.setCurrentIndex(sel_idx)
-                    combo.currentIndexChanged.connect(lambda idx, f=fid: self._on_param_changed(f, idx))
-                    # Save widget reference for targeted updates
-                    try:
-                        self._config_field_widgets[int(fid)] = combo
-                    except Exception:
-                        pass
-                    row_layout.addWidget(label)
-                    row_layout.addWidget(combo)
-                    row_layout.addStretch()
-                    target_layout.addLayout(row_layout)
-                elif ftype == 11:  # info/label
-                    # If this field is used as a folder parent (it owns a groupbox),
-                    # skip adding an extra QLabel inside the group box since the
-                    # QGroupBox already shows the title. We still continue to
-                    # process this field so the group title gets updated below.
-                    if int(fid) in parents_set:
-                        # do not add a duplicate label for a folder header
-                        pass
-                    else:
-                        label = QtWidgets.QLabel(f"{name}")
-                        target_layout.addWidget(label)
-                elif 0 <= ftype <= 8:  # numeric value
-                    row_layout = QtWidgets.QHBoxLayout()
-                    label = QtWidgets.QLabel(f"{name}:")
-                    combo = NoWheelComboBox()
-                    # Use parsed min/max/step if present
-                    minv = field.get('min') if field.get('min') is not None else 0
-                    maxv = field.get('max') if field.get('max') is not None else (minv + 100)
-                    stepv = field.get('step') if field.get('step') is not None else 1
-
-                    # Get unit for display
-                    unit = None
-                    try:
-                        unit = UNIT_MAP.get(name.strip().lower())
-                    except Exception:
-                        pass
-
-                    # Generate combo values from min, max, and step
-                    try:
-                        minv = int(minv)
-                        maxv = int(maxv)
-                        stepv = int(stepv) if stepv > 0 else 1
-                        # Limit number of items to prevent UI issues with huge ranges
-                        max_items = 1000
-                        num_items = (maxv - minv) // stepv + 1
-                        if num_items > max_items:
-                            # If too many items, adjust step to fit within limit
-                            stepv = max(1, (maxv - minv) // (max_items - 1))
-
-                        values = []
-                        value_map = {}  # Map display string to actual value
-                        idx = 0
-                        for val in range(minv, maxv + 1, stepv):
-                            if unit:
-                                display_str = f"{val}{unit}"
-                            else:
-                                display_str = str(val)
-                            values.append(display_str)
-                            value_map[idx] = val
-                            idx += 1
-
-                        combo.addItems(values)
-                    except Exception as e:
-                        self.onDebug(f"Error generating numeric combo values: {e}")
-                        # Fallback: just add min and max
-                        values = [str(minv), str(maxv)]
-                        combo.addItems(values)
-                        value_map = {0: minv, 1: maxv}
-
-                    # Set current value
-                    dev_value = int(field.get('value', field.get('status', field.get('default', minv if minv is not None else 0))))
-                    # honor pending write
-                    pending = self._pending_param_writes.get(int(fid)) if hasattr(self, '_pending_param_writes') else None
-                    if pending:
-                        try:
-                            val, ts = pending
-                            dev_value = int(val)
-                        except Exception:
-                            pass
-
-                    # Find the index that matches dev_value
-                    try:
-                        # Find which index in value_map corresponds to dev_value
-                        target_idx = 0
-                        for idx, val in value_map.items():
-                            if val == dev_value:
-                                target_idx = idx
-                                break
-                        combo.blockSignals(True)
-                        combo.setCurrentIndex(target_idx)
-                        combo.blockSignals(False)
-                    except Exception:
-                        pass
-
-                    # Connect on-change to directly call _on_param_changed
-                    def _on_combo_changed(idx, f=fid, vmap=value_map):
-                        try:
-                            actual_value = vmap.get(idx, minv)
-                            self._on_param_changed(f, actual_value)
-                        except Exception as e:
-                            self.onDebug(f"Numeric combo change error: {e}")
-
-                    combo.currentIndexChanged.connect(_on_combo_changed)
-
-                    # Save widget reference for targeted updates
-                    try:
-                        self._config_field_widgets[int(fid)] = combo
-                    except Exception:
-                        pass
-
-                    row_layout.addWidget(label)
-                    row_layout.addWidget(combo)
-                    row_layout.addStretch()
-                    target_layout.addLayout(row_layout)
-                elif ftype == 12:  # string info (read-only)
-                    value = field.get('value', '')
-                    label = QtWidgets.QLabel(f"{name}: {value}")
-                    # Allow strings to be editable via context menu / popup (future)
-                    target_layout.addWidget(label)
-                    try:
-                        self._config_field_widgets[int(fid)] = label
-                    except Exception:
-                        pass
-                elif ftype == 13:  # command/button
-                    button = QtWidgets.QPushButton(f"{name}")
-                    button.clicked.connect(lambda checked, f=fid: self._on_param_changed(f, 1))  # Assume toggle or something
-                    target_layout.addWidget(button)
-                    try:
-                        self._config_field_widgets[int(fid)] = button
-                    except Exception:
-                        pass
-                else:
-                    label = QtWidgets.QLabel(f"{name} (type {ftype})")
-                    target_layout.addWidget(label)
-                    try:
-                        self._config_field_widgets[int(fid)] = label
-                    except Exception:
-                        pass
-            except Exception as e:
-                self.onDebug(f"Error adding field {fid}: {e}")
-            # If this field is a folder that had a placeholder group, update its name
-            try:
-                if fid in group_layouts:
-                    # group_layouts[fid] = (group_box, layout)
-                    group_layouts[fid][0].setTitle(str(field.get('name', f'Folder {fid}')))
-            except Exception:
-                pass
-
-        inner_layout.addStretch()
-
-        scroll.setWidget(widget)
-        layout.addWidget(scroll)
-        # Only set current_device_id for TX modules, not receivers
-        if src in (CRSF_ADDRESS_CRSF_TRANSMITTER, CRSF_ADDRESS_TRANSMITTER_LEGACY):
-            self.current_device_id = src
-        config_tab.update()
-        self.tabs.update()
-        self.tabs.repaint()
-        widget.update()
-        scroll.update()
 
 # -------------------------------------------------------------------
 
@@ -1766,6 +1755,16 @@ def create_checkmark_icon(color='#ffffff', size=16):
 
 
 if __name__ == "__main__":
+    # Raise Windows system timer resolution from 15.6 ms to 1 ms so that
+    # QTimer(0) fires at ~1 kHz instead of ~64 Hz. Required for stable 1000 Hz
+    # RC output; harmless on macOS/Linux where the kernel is already fine-grained.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.winmm.timeBeginPeriod(1)
+        except Exception:
+            pass
+
     app = QtWidgets.QApplication(sys.argv)
 
     # Create temporary directory for icons
