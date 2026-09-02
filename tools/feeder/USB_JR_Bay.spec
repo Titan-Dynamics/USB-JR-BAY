@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='USB JR Bay',
+    name='USB_JR_Bay',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

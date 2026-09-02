@@ -16,15 +16,13 @@ Full link stats are displayed in real-time on the main dashboard tab for monitor
 
 ## 3D-printable JR bay
 
-`STLs/` contains a desktop enclosure consisting of a base, a top, and a tripod adapter. The STL was originally designed to house an intermediate ESP32 bridge controller, but this is no longer needed. The STL is still provided as it makes for a convenient tripod mounting solution for the TX module.
-
-<img width="1600" height="1200" alt="JR bay enclosure rear" src="https://github.com/user-attachments/assets/bf28fecf-215a-4c77-9279-5b32b4d4da69" />
+`STLs/` contains a printable tripod mount for the JR bay and a battery (Radiomaster 6.2Ah Lipo)
 
 ## Running it
 
 Requires Python 3.9 or newer, a USB joystick or gamepad, and a TitanLRS TX module running the latest firmware version.
 
-The easiest way to run the app is to download the pre-built .exe from the Releases tab on Github.
+The easiest way to run the app is to download the pre-built binary for your OS from the Releases tab on Github (Windows .exe, macOS .app, or Linux binary).
 
 Alternatively, you can run from the CLI in python using:
 
@@ -38,13 +36,23 @@ Pick the TX's COM port from the dropdown at the top of the window.
 
 First-run setup is the obvious order: pick a port, connect a joystick, hit **Map** on each channel row and move the axis or press the button you want bound to it, then set min/center/max/expo to taste. The **Parameters** tab will populate once the TX is talking.
 
-## Building a Windows .exe
+## Building an executable
 
-A PyInstaller spec is checked in that produces a single-file, windowed executable with the right icon embedded.
+CI builds Windows, macOS (Intel and Apple Silicon), and Linux binaries on every push, and attaches them to the release when a `v*` tag is pushed.
+
+To build locally, from `tools/feeder`:
 
 ```powershell
-pyinstaller --onefile --windowed --icon="icon.ico" --name="USB JR Bay" feeder.py
+# Windows
+pyinstaller --onefile --windowed --icon="icon.ico" --add-data "icon.ico;." --name="USB_JR_Bay" feeder.py
 ```
+
+```bash
+# macOS / Linux (drop --icon on Linux; macOS needs pillow installed to convert the .ico)
+pyinstaller --onefile --windowed --icon="icon.ico" --add-data "icon.ico:." --name="USB_JR_Bay" feeder.py
+```
+
+Windows gets `dist/USB_JR_Bay.exe`, macOS gets `dist/USB_JR_Bay.app`, Linux gets `dist/USB_JR_Bay`.
 
 ## Repo layout
 
