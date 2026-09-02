@@ -28,7 +28,8 @@ jobs:
             label: macOS-arm64
             data_sep: ':'
             icon_arg: '--icon=icon.ico'
-          - os: macos-13
+          # Last x86_64 macOS image GitHub offers; retired August 2027
+          - os: macos-15-intel
             label: macOS-x86_64
             data_sep: ':'
             icon_arg: '--icon=icon.ico'
