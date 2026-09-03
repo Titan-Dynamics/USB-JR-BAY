@@ -30,8 +30,9 @@ from device_parameters import (
     PARAM_TYPE_STRING, PARAM_TYPE_FOLDER, PARAM_TYPE_INFO, PARAM_TYPE_COMMAND,
 )
 
-GUI_UPDATE_INTERVAL_S = 1.0 / 60  # ~60 Hz redraws
-CSV_LOG_INTERVAL_S    = 0.1       # 10 Hz CSV logging
+GUI_UPDATE_INTERVAL_S = 1.0 / 60   # ~60 Hz redraws
+CSV_LOG_INTERVAL_S    = 0.1        # 10 Hz CSV logging
+JOY_POLL_INTERVAL_S   = 1.0 / 250  # 250 Hz joystick sampling floor
 
 
 class NoWheelComboBox(QtWidgets.QComboBox):
@@ -154,6 +155,8 @@ class Main(QtWidgets.QWidget):
 
         # Throttle timestamps for the split-tick design
         self._last_gui_update = 0.0
+        self._last_joy_poll = 0.0
+        self._latest_ch = [1500] * CHANNELS
 
         # CSV logging setup
         self.csv_filename = None
@@ -176,7 +179,7 @@ class Main(QtWidgets.QWidget):
         self.latest_axes = []
         self.latest_buttons = []
 
-        # Joystick (auto-scanning) - called from main tick() at 500Hz
+        # Joystick (auto-scanning) - polled from main tick() at 250Hz (JOY_POLL_INTERVAL_S)
         self.joy = JoystickHandler()
         # Connect joystick status
         self.joy.status.connect(self.onDebug)
@@ -680,24 +683,26 @@ class Main(QtWidgets.QWidget):
 
     def tick(self):
         """
-        Main update loop driven by QTimer(0) — fires as fast as the Qt event
-        queue allows.
-
-        Fast path (every tick): joystick sample, failsafe wiring, CRSF state
-        machine (drains RX, emits due frames).
-
-        Throttled paths: GUI redraws at ~60 Hz; CSV logging at 10 Hz.
+        Main update loop driven by a 1 ms QTimer. This keeps CRSF frame timing
+        precise at max 1000hz. Joystick sampled at 250Hz to reduce load. GUI redraws at
+        60 Hz; CSV logging at 10 Hz.
         """
         now = time.monotonic()
 
-        # ---- Always: latency-sensitive serial + joystick path ----
-        axes, btns = self.joy.read()
-        self.latest_axes = axes
-        self.latest_buttons = btns
+        # ---- Joystick sampled at 250 Hz ----
+        if now - self._last_joy_poll >= JOY_POLL_INTERVAL_S:
+            self._last_joy_poll = now
+            axes, btns = self.joy.read()
+            self.latest_axes = axes
+            self.latest_buttons = btns
+            self._latest_ch = self.joy.compute_channels(axes, btns)
+
+        axes = self.latest_axes
+        btns = self.latest_buttons
+        ch = self._latest_ch
         joystick_connected = self.joy.j is not None
 
-        ch = self.joy.compute_channels(axes, btns)
-
+        # ---- Latency-sensitive CRSF path at 1000hz ----
         if joystick_connected:
             self.crsf_state_machine.update_channels(ch, channels_are_1000_2000=True)
             self.crsf_state_machine.set_failsafe(False)

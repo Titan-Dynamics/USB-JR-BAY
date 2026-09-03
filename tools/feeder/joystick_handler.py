@@ -2,7 +2,7 @@
 Joystick Input Handling
 
 This module manages joystick device detection, connection, and input reading.
-Called from main GUI thread at 500Hz.
+Called from main GUI thread at 250Hz (see JOY_POLL_INTERVAL_S in feeder.py).
 """
 
 import os
@@ -22,7 +22,7 @@ from PyQt5 import QtCore
 class JoystickHandler(QtCore.QObject):
     """Handles joystick connection and input reading.
 
-    Called from main thread at 500Hz to read joystick and compute channels.
+    Called from main thread at 250Hz to read joystick and compute channels.
 
     Signals:
         status(str): Joystick connection status updates
