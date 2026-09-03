@@ -529,11 +529,10 @@ class Main(QtWidgets.QWidget):
         self.joy.set_channel_rows(self.rows)
         self.joy.set_toggle_group_enforcer(self._enforce_toggle_groups)
 
-        # Drive tick as fast as the Qt event queue allows; expensive work is
-        # throttled inside tick() itself via monotonic-time gates.
+        # Drive tick at 1 ms so joystick sampling stays at true 1 kHz
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self.tick)
-        self.timer.start(0)
+        self.timer.start(1)
 
         # Schedule initial connection attempt after GUI is shown
         def attempt_initial_connection():
