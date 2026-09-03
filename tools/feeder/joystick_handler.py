@@ -2,8 +2,18 @@
 Joystick Input Handling
 
 This module manages joystick device detection, connection, and input reading.
-Called from main GUI thread at 500Hz.
+Called from main GUI thread at 250Hz (see JOY_POLL_INTERVAL_S in feeder.py).
 """
+
+import os
+import sys
+
+# SDL's HIDAPI joystick backend segfaults inside hid_report_callback on macOS as
+# soon as a device sends an input report (SDL 2.28.4, bundled with pygame 2.6.1).
+# The IOKit driver handles generic HID gamepads fine, so turn HIDAPI off there.
+# SDL reads its hints from the environment, and this must be set before SDL_Init.
+if sys.platform == "darwin":
+    os.environ.setdefault("SDL_JOYSTICK_HIDAPI", "0")
 
 import pygame
 from PyQt5 import QtCore
@@ -12,7 +22,7 @@ from PyQt5 import QtCore
 class JoystickHandler(QtCore.QObject):
     """Handles joystick connection and input reading.
 
-    Called from main thread at 500Hz to read joystick and compute channels.
+    Called from main thread at 250Hz to read joystick and compute channels.
 
     Signals:
         status(str): Joystick connection status updates
