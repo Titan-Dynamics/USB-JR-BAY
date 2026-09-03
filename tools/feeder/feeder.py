@@ -465,7 +465,7 @@ class Main(QtWidgets.QWidget):
         divider1.setLineWidth(2)
         top_bar.addWidget(divider1)
 
-        top_bar.addWidget(QtWidgets.QLabel("ESP32 COM Port:"))
+        top_bar.addWidget(QtWidgets.QLabel("TitanLRS COM Port:"))
         top_bar.addWidget(self.portCombo)
         top_bar.addWidget(self.refreshPortBtn)
 
